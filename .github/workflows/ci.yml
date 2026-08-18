@@ -1,0 +1,68 @@
+name: CI Workflow
+
+on:
+  push:
+    branches: [ "main", "dev" ]
+  pull_request:
+    branches: [ "main", "dev" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: edusphere_test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/edusphere_test_db?schema=public
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test_jwt_secret_key_12345
+      JWT_REFRESH_SECRET: test_refresh_secret_key_12345
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run Prisma generator
+      run: npx prisma generate
+
+    - name: Run Linter
+      run: npm run lint
+      continue-on-error: true
+
+    # Uncomment this when unit/integration tests are ready
+    # - name: Run Tests & Coverage
+    #   run: npm run test:coverage

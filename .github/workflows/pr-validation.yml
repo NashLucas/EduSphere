@@ -1,0 +1,37 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+
+jobs:
+  validate-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR Title (Conventional Commits)
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Define which types are allowed
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          # Scope is not required (e.g., "feat: Add authentication" is fine)
+          requireScope: false
+          # Custom validation error message
+          headerPattern: '^(\w*)(?:\(([\w$.\-*/ ]*)\))?: (.*)$'
+          headerPatternCorrespondence: type, scope, subject

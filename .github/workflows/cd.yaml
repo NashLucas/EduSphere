@@ -1,0 +1,45 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        # To use this, configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in your GitHub repository secrets
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest,${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:${{ github.sha }}
+          
+      # Example: Deploying to a production server via SSH
+      # Uncomment and configure this block when your production server is ready
+      # - name: Deploy to Production
+      #   uses: appleboy/ssh-action@master
+      #   with:
+      #     host: ${{ secrets.PROD_SERVER_HOST }}
+      #     username: ${{ secrets.PROD_SERVER_USER }}
+      #     key: ${{ secrets.PROD_SERVER_SSH_KEY }}
+      #     script: |
+      #       docker pull ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest
+      #       docker stop edusphere-api || true
+      #       docker rm edusphere-api || true
+      #       docker run -d --name edusphere-api -p 5000:5000 --env-file .env ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest

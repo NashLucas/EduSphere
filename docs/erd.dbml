@@ -1,0 +1,394 @@
+// EduSphere Database ERD
+// Generated from src/database/schema.prisma
+// Paste into https://dbdiagram.io to render.
+
+Project EduSphere {
+  database_type: 'PostgreSQL'
+  Note: 'EduSphere e-learning & assessment platform database'
+}
+
+Table users {
+  id                uuid        [pk, note: 'gen_random_uuid()']
+  full_name         varchar
+  email             varchar     [unique]
+  password_hash     varchar
+  role              user_role   [default: 'STUDENT']
+  avatar_url        varchar
+  bio               text
+  is_email_verified boolean     [default: false]
+  is_banned         boolean     [default: false]
+  created_at        timestamp   [default: `now()`]
+  updated_at        timestamp
+  deleted_at        timestamp
+  indexes {
+    (id) [pk]
+    (email) [unique]
+  }
+}
+
+Table instructors {
+  id            uuid      [pk, note: 'gen_random_uuid()']
+  user_id       uuid      [unique]
+  title         varchar
+  rating        float     [default: 0.0]
+  student_count int       [default: 0]
+  created_at    timestamp [default: `now()`]
+  updated_at    timestamp
+  indexes {
+    (id) [pk]
+    (user_id) [unique]
+  }
+}
+
+Table subjects {
+  id           uuid      [pk, note: 'gen_random_uuid()']
+  name         varchar   [unique]
+  slug         varchar   [unique]
+  icon         varchar
+  color        varchar
+  course_count int       [default: 0]
+  created_at   timestamp [default: `now()`]
+  updated_at   timestamp
+  indexes {
+    (id) [pk]
+    (name) [unique]
+    (slug) [unique]
+  }
+}
+
+Table courses {
+  id            uuid         [pk, note: 'gen_random_uuid()']
+  title         varchar
+  slug          varchar      [unique]
+  description   text
+  subject_id    uuid
+  instructor_id uuid
+  level         course_level [default: 'BEGINNER']
+  price         decimal      [default: 0.00]
+  language      varchar      [default: 'English']
+  duration      varchar
+  rating        float        [default: 0.0]
+  student_count int          [default: 0]
+  is_featured   boolean      [default: false]
+  is_published  boolean      [default: false]
+  requirements  json
+  objectives    json
+  created_at    timestamp    [default: `now()`]
+  updated_at    timestamp
+  deleted_at    timestamp
+  indexes {
+    (id) [pk]
+    (subject_id)
+    (instructor_id)
+    (slug) [unique]
+  }
+}
+
+Table modules {
+  id          uuid      [pk, note: 'gen_random_uuid()']
+  course_id   uuid
+  title       varchar
+  order_index int
+  created_at  timestamp [default: `now()`]
+  updated_at  timestamp
+  indexes {
+    (id) [pk]
+    (course_id)
+  }
+}
+
+Table lessons {
+  id           uuid        [pk, note: 'gen_random_uuid()']
+  module_id    uuid
+  title        varchar
+  type         lesson_type [default: 'TEXT']
+  duration     varchar
+  content      text
+  video_url    varchar
+  code_snippet text
+  order_index  int
+  quiz_id      uuid        [unique]
+  created_at   timestamp   [default: `now()`]
+  updated_at   timestamp
+  indexes {
+    (id) [pk]
+    (module_id)
+    (quiz_id) [unique]
+  }
+}
+
+Table enrollments {
+  id               uuid              [pk, note: 'gen_random_uuid()']
+  user_id          uuid
+  course_id        uuid
+  enrolled_at      timestamp         [default: `now()`]
+  completed_at     timestamp
+  progress_percent float             [default: 0.0]
+  status           enrollment_status [default: 'ACTIVE']
+  indexes {
+    (id) [pk]
+    (user_id, course_id) [unique]
+    (user_id)
+    (course_id)
+  }
+}
+
+Table lesson_progress {
+  id            uuid      [pk, note: 'gen_random_uuid()']
+  enrollment_id uuid
+  lesson_id     uuid
+  is_completed  boolean   [default: false]
+  completed_at  timestamp
+  indexes {
+    (id) [pk]
+    (enrollment_id, lesson_id) [unique]
+    (enrollment_id)
+    (lesson_id)
+  }
+}
+
+Table quizzes {
+  id            uuid      [pk, note: 'gen_random_uuid()']
+  course_id     uuid
+  lesson_id     uuid      [unique]
+  title         varchar
+  passing_score int       [default: 70]
+  created_at    timestamp [default: `now()`]
+  updated_at    timestamp
+  indexes {
+    (id) [pk]
+    (course_id)
+    (lesson_id) [unique]
+  }
+}
+
+Table quiz_questions {
+  id                   uuid               [pk, note: 'gen_random_uuid()']
+  quiz_id              uuid
+  question_text        text
+  type                 quiz_question_type [default: 'MULTIPLE_CHOICE']
+  options              json
+  correct_answer_index int
+  order_index          int
+  created_at           timestamp          [default: `now()`]
+  updated_at           timestamp
+  indexes {
+    (id) [pk]
+    (quiz_id)
+  }
+}
+
+Table quiz_attempts {
+  id              uuid      [pk, note: 'gen_random_uuid()']
+  user_id         uuid
+  quiz_id         uuid
+  score           float
+  total_questions int
+  answers         json
+  is_passed       boolean
+  attempted_at    timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (user_id)
+    (quiz_id)
+  }
+}
+
+Table resources {
+  id          uuid      [pk, note: 'gen_random_uuid()']
+  title       varchar
+  description text
+  category    varchar
+  file_type   varchar
+  file_url    varchar
+  file_size   int
+  course_id   uuid
+  uploaded_by uuid
+  created_at  timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (course_id)
+    (uploaded_by)
+  }
+}
+
+Table bookmarks {
+  id         uuid      [pk, note: 'gen_random_uuid()']
+  user_id    uuid
+  course_id  uuid
+  lesson_id  uuid
+  created_at timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (user_id, course_id, lesson_id) [unique]
+    (user_id)
+  }
+}
+
+Table reviews {
+  id                      uuid      [pk, note: 'gen_random_uuid()']
+  user_id                 uuid
+  course_id               uuid
+  rating                  int
+  comment                 text
+  is_featured_testimonial boolean   [default: false]
+  created_at              timestamp [default: `now()`]
+  updated_at              timestamp
+  indexes {
+    (id) [pk]
+    (user_id, course_id) [unique]
+    (course_id)
+  }
+}
+
+Table achievements {
+  id             uuid      [pk, note: 'gen_random_uuid()']
+  name           varchar   [unique]
+  description    text
+  icon           varchar
+  criteria_type  varchar
+  criteria_value int
+  created_at     timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (name) [unique]
+  }
+}
+
+Table user_achievements {
+  id             uuid      [pk, note: 'gen_random_uuid()']
+  user_id        uuid
+  achievement_id uuid
+  earned_at      timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (user_id, achievement_id) [unique]
+    (user_id)
+  }
+}
+
+Table notifications {
+  id         uuid              [pk, note: 'gen_random_uuid()']
+  user_id    uuid
+  type       notification_type [default: 'SYSTEM']
+  title      varchar
+  message    text
+  is_read    boolean           [default: false]
+  created_at timestamp         [default: `now()`]
+  indexes {
+    (id) [pk]
+    (user_id)
+  }
+}
+
+Table certificates {
+  id              uuid      [pk, note: 'gen_random_uuid()']
+  certificate_no  varchar   [unique]
+  user_id         uuid
+  course_id       uuid
+  issued_at       timestamp [default: `now()`]
+  certificate_url varchar
+  indexes {
+    (id) [pk]
+    (certificate_no) [unique]
+    (user_id, course_id) [unique]
+    (user_id)
+  }
+}
+
+Table user_streaks {
+  id               uuid      [pk, note: 'gen_random_uuid()']
+  user_id          uuid      [unique]
+  current_streak   int       [default: 0]
+  longest_streak   int       [default: 0]
+  last_active_date date
+  indexes {
+    (id) [pk]
+    (user_id) [unique]
+  }
+}
+
+Table audit_logs {
+  id           uuid      [pk, note: 'gen_random_uuid()']
+  admin_id     uuid
+  action_type  varchar
+  target_type  varchar
+  target_id    uuid
+  reason       text
+  metadata     json
+  performed_at timestamp [default: `now()`]
+  indexes {
+    (id) [pk]
+    (admin_id)
+    (target_id)
+    (performed_at)
+  }
+}
+
+Ref: instructors.user_id - users.id [delete: cascade]
+Ref: courses.subject_id > subjects.id [delete: restrict]
+Ref: courses.instructor_id > instructors.id [delete: restrict]
+Ref: modules.course_id > courses.id [delete: cascade]
+Ref: lessons.module_id > modules.id [delete: cascade]
+Ref: lessons.quiz_id - quizzes.id [delete: set null]
+Ref: enrollments.user_id > users.id [delete: cascade]
+Ref: enrollments.course_id > courses.id [delete: cascade]
+Ref: lesson_progress.enrollment_id > enrollments.id [delete: cascade]
+Ref: lesson_progress.lesson_id > lessons.id [delete: cascade]
+Ref: quizzes.course_id > courses.id [delete: cascade]
+Ref: quiz_questions.quiz_id > quizzes.id [delete: cascade]
+Ref: quiz_attempts.user_id > users.id [delete: cascade]
+Ref: quiz_attempts.quiz_id > quizzes.id [delete: cascade]
+Ref: resources.course_id > courses.id [delete: set null]
+Ref: resources.uploaded_by > users.id [delete: restrict]
+Ref: bookmarks.user_id > users.id [delete: cascade]
+Ref: bookmarks.course_id > courses.id [delete: cascade]
+Ref: bookmarks.lesson_id > lessons.id [delete: cascade]
+Ref: reviews.user_id > users.id [delete: cascade]
+Ref: reviews.course_id > courses.id [delete: cascade]
+Ref: user_achievements.user_id > users.id [delete: cascade]
+Ref: user_achievements.achievement_id > achievements.id [delete: cascade]
+Ref: notifications.user_id > users.id [delete: cascade]
+Ref: certificates.user_id > users.id [delete: cascade]
+Ref: certificates.course_id > courses.id [delete: cascade]
+Ref: user_streaks.user_id - users.id [delete: cascade]
+Ref: audit_logs.admin_id > users.id [delete: restrict]
+
+Enum user_role {
+  STUDENT
+  INSTRUCTOR
+  ADMIN
+}
+
+Enum course_level {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  ALL_LEVELS
+}
+
+Enum lesson_type {
+  VIDEO
+  TEXT
+  CODE
+  QUIZ
+}
+
+Enum enrollment_status {
+  ACTIVE
+  COMPLETED
+  DROPPED
+}
+
+Enum quiz_question_type {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+}
+
+Enum notification_type {
+  SYSTEM
+  ENROLLMENT
+  COURSE_UPDATE
+  ACHIEVEMENT
+  CERTIFICATE
+}
