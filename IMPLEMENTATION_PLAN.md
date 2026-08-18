@@ -6,6 +6,7 @@
 | **Timeline** | 16 Working Days (4 Phases × 4 Days) |
 | **Team Model** | Solo / Small-Team Backend Development |
 | **Source of Truth** | [EduTRD.md](./EduTRD.md), [ARCHITECTURE.md](./ARCHITECTURE.md), [apidoc.md](./docs/apidoc.md) |
+| **Branch Strategy** | Feature branches (`feat/<name>`) off `dev`; PRs into `dev`; `main` is production ([CONTRIBUTING.md](./CONTRIBUTING.md)) |
 | **Date** | August 2026 |
 
 ---
@@ -21,6 +22,21 @@ The plan follows a **bottom-up construction** approach: infrastructure and secur
 
 ---
 
+## Git Workflow
+
+All development follows the branching strategy defined in [CONTRIBUTING.md](./CONTRIBUTING.md):
+
+1. Each phase (or major feature day) produces a **feature branch** off `dev` (e.g., `feat/phase-1-foundation`, `feat/quiz-assessment-engine`).
+2. Branch names follow the convention: `feat/<name>`, `fix/<name>`, or `chore/<name>`.
+3. Commits use **Conventional Commits** format (e.g., `feat: implement atomic lesson completion`).
+4. Each feature branch is submitted as a **Pull Request targeting `dev`**, reviewed, and merged after CI passes.
+5. `main` is production-only — merged from `dev` via release PRs after phase completion.
+
+> [!TIP]
+> **Unit tests are written continuously** alongside service code in each module's `tests/` folder (e.g., `src/modules/quizzes/tests/`). Day 15 focuses on cross-module integration tests and the coverage sweep — not on writing unit tests retroactively.
+
+---
+
 ## Phase 1: Foundation & Core Infrastructure (Days 1–4)
 
 **Objective:** Stand up the project skeleton, database schema, authentication system, RBAC middleware pipeline, and the first public-facing CRUD modules (Subjects & Courses). By the end of Phase 1, the API should accept user registration, issue JWT tokens, enforce role-based access, and serve a browsable course catalog.
@@ -33,7 +49,7 @@ The plan follows a **bottom-up construction** approach: infrastructure and secur
 
 | # | Task | Details |
 | :--- | :--- | :--- |
-| 1.1 | **Project Initialization** | Scaffold `package.json` with ES Module support (`"type": "module"`). Install all production and dev dependencies (Express 5, Prisma 6, `ioredis`, `jsonwebtoken`, `bcryptjs`, `zod`, `helmet`, `cors`, `pino`, `pino-http`, `express-rate-limit`, `pdfkit`, `swagger-ui-express`). |
+| 1.1 | **Project Initialization** | Scaffold `package.json` with ES Module support (`"type": "module"`). Install all production and dev dependencies (Express 5, Prisma 6, `ioredis`, `jsonwebtoken`, `bcryptjs`, `zod`, `helmet`, `cors`, `pino`, `pino-http`, `express-rate-limit`, `pdfkit`, `swagger-ui-express`, `axios`). |
 | 1.2 | **Environment Configuration** | Create `src/config/env.js` with Zod schema validation for all environment variables. Invalid or missing values halt startup with descriptive error messages. Create `.env.example` as the reference template. |
 | 1.3 | **Docker Compose Setup** | Author `docker-compose.yml` provisioning PostgreSQL 15 (port 5432) and Redis 7 (port 6379) containers with persistent volumes and health checks. |
 | 1.4 | **Prisma Schema & Migration** | Write `src/database/schema.prisma` defining all 20 models, 6 enums, indexes, unique constraints, and cascade rules. Run `prisma migrate dev --name init` to generate the initial migration. |
@@ -94,15 +110,16 @@ curl http://localhost:5000/health
 | # | Task | Details |
 | :--- | :--- | :--- |
 | 3.1 | **Auth Zod Schemas** | Define `src/modules/auth/auth.schema.js` with strict schemas: `registerSchema` (fullName 2–100 chars, email, password 8+ chars with complexity rules, optional role), `loginSchema`, `refreshSchema`, `verifyEmailSchema`, `forgotPasswordSchema`, `resetPasswordSchema`. |
-| 3.2 | **Auth Service — Registration** | Implement `register()`: check email uniqueness → hash password (bcrypt, 12 rounds) → create user record → generate email verification token → store token in Redis with 24h TTL → dispatch verification email → return sanitized user object (no `passwordHash`). |
-| 3.3 | **Auth Service — Login** | Implement `login()`: find user by email → verify password hash → check `isBanned` flag → check `deletedAt` soft-delete → generate access token (15m) and refresh token (7d) → store refresh token hash in Redis (`session:<userId>:<tokenId>`) → return token pair. |
-| 3.4 | **Auth Service — Token Refresh** | Implement `refresh()`: extract refresh token from `HttpOnly` cookie → verify JWT signature → validate session exists in Redis → rotate: delete old session key, issue new token pair, store new session → return fresh tokens. |
-| 3.5 | **Auth Service — Logout** | Implement `logout()`: delete the specific `session:<userId>:<tokenId>` key from Redis → clear refresh cookie. |
-| 3.6 | **Auth Service — Password Recovery** | Implement `forgotPassword()` (generate reset token, store in Redis with 15m TTL, send email) and `resetPassword()` (validate token, hash new password, update user, delete token from Redis, purge all sessions). |
-| 3.7 | **Auth Service — Email Verification** | Implement `verifyEmail()`: validate token against Redis → set `isEmailVerified = true` → delete verification token from Redis. |
-| 3.8 | **Auth Controller & Routes** | Wire all 8 auth endpoints with appropriate Zod validation, rate limiting (5 req / 15 min on sensitive endpoints), and response formatting. |
-| 3.9 | **requireAuth Middleware** | Create `src/middlewares/auth.middleware.js`: extract Bearer token → verify JWT → fetch user from DB → check `isBanned` → check `deletedAt` → attach `req.user` with `{ id, email, role }`. Also implement `optionalAuth` variant for public routes that benefit from user context. |
-| 3.10 | **requireRole Middleware** | Create `src/middlewares/rbac.middleware.js`: accepts array of allowed roles → compares against `req.user.role` → returns HTTP 403 if unauthorized. |
+| 3.2 | **Email Stub Service** | Create `src/integrations/email/index.js` as a lightweight stub that **logs email content to the console** via `pino` instead of making real API calls. Exports the same interface (`sendVerificationEmail`, `sendPasswordResetEmail`, etc.) that will be replaced with the real Brevo/SendGrid client on Day 11. This unblocks auth email flows without front-loading the full integration. |
+| 3.3 | **Auth Service — Registration** | Implement `register()`: check email uniqueness → hash password (bcrypt, 12 rounds) → create user record → generate email verification token → store token in Redis with 24h TTL → dispatch verification email via stub → return sanitized user object (no `passwordHash`). |
+| 3.4 | **Auth Service — Login** | Implement `login()`: find user by email → verify password hash → check `isBanned` flag → check `deletedAt` soft-delete → generate access token (15m) and refresh token (7d) → store refresh token hash in Redis (`session:<userId>:<tokenId>`) → return token pair. |
+| 3.5 | **Auth Service — Token Refresh** | Implement `refresh()`: extract refresh token from `HttpOnly` cookie → verify JWT signature → validate session exists in Redis → rotate: delete old session key, issue new token pair, store new session → return fresh tokens. |
+| 3.6 | **Auth Service — Logout** | Implement `logout()`: delete the specific `session:<userId>:<tokenId>` key from Redis → clear refresh cookie. |
+| 3.7 | **Auth Service — Password Recovery** | Implement `forgotPassword()` (generate reset token, store in Redis with 15m TTL, send email via stub) and `resetPassword()` (validate token, hash new password, update user, delete token from Redis, purge all sessions). |
+| 3.8 | **Auth Service — Email Verification** | Implement `verifyEmail()`: validate token against Redis → set `isEmailVerified = true` → delete verification token from Redis. |
+| 3.9 | **Auth Controller & Routes** | Wire all 8 auth endpoints with appropriate Zod validation, rate limiting (5 req / 15 min on sensitive endpoints), and response formatting. |
+| 3.10 | **requireAuth Middleware** | Create `src/middlewares/auth.middleware.js`: extract Bearer token → verify JWT → fetch user from DB → check `isBanned` → check `deletedAt` → attach `req.user` with `{ id, email, role }`. Also implement `optionalAuth` variant for public routes that benefit from user context. |
+| 3.11 | **requireRole Middleware** | Create `src/middlewares/rbac.middleware.js`: accepts array of allowed roles → compares against `req.user.role` → returns HTTP 403 if unauthorized. |
 
 **Deliverables:**
 - Full auth flow: register → verify email → login → access protected route → refresh token → logout
@@ -209,6 +226,12 @@ curl http://localhost:5000/health
 - Re-enrollment reactivates dropped enrollments without data loss
 - User learning streaks update daily
 
+**Unit Tests (written same day in `src/modules/enrollments/tests/`):**
+- Progress percentage formula correctness (e.g., 3/10 lessons = 30.0%)
+- Division-by-zero guard returns 0.0% for courses with 0 lessons
+- Streak increment logic (yesterday → +1, today → no-op, gap → reset to 1)
+- Re-enrollment status transition from `DROPPED` → `ACTIVE`
+
 ---
 
 ### Day 7 — Server-Side Quiz Assessment Engine
@@ -230,6 +253,12 @@ curl http://localhost:5000/health
 - Passing a quiz automatically completes the linked lesson
 - Full attempt history available per user per quiz
 
+**Unit Tests (written same day in `src/modules/quizzes/tests/`):**
+- Score calculation correctness (e.g., 7/10 correct = 70.0%)
+- Pass/fail determination against `passingScore` threshold
+- `correctAnswerIndex` stripped from student-facing response serialization
+- Edge case: submitting fewer or more answers than questions
+
 ---
 
 ### Day 8 — Cloud Storage Integration & Resource Management
@@ -241,7 +270,7 @@ curl http://localhost:5000/health
 | 8.1 | **Storage Integration** | Implement `src/integrations/storage/index.js`: pre-signed URL generation for S3 PUT uploads (15m TTL, enforced `Content-Type`), file deletion, and public URL construction. Support Cloudinary as an alternative provider via environment flag. |
 | 8.2 | **Upload URL Endpoint** | Implement `POST /resources/upload-url { fileName, fileType, fileSize, courseId }`: RBAC guard (Instructor + ownership) → validate file type (whitelist: `video/*`, `application/pdf`, `image/*`, `application/zip`) and size (max 500MB for video, 10MB for documents) → generate and return pre-signed URL with file key. |
 | 8.3 | **Upload Confirmation** | Implement `POST /resources/confirm { fileKey, title, description, category, courseId }`: verify the file exists in storage → create `Resource` metadata record in PostgreSQL → return resource details. |
-| 8.4 | **Resource Listing & Deletion** | Implement `GET /resources?category=&courseId=&page=&limit=` (public browsing), `DELETE /resources/:id` (Instructor owner or Admin — deletes metadata record and triggers S3/Cloudinary file removal). |
+| 8.4 | **Resource Listing, Direct Upload & Deletion** | Implement `GET /resources?category=&courseId=&page=&limit=` (public browsing), `POST /resources` (Instructor/Admin — direct resource metadata upload without pre-signed URL flow), `DELETE /resources/:id` (Instructor owner or Admin — deletes metadata record and triggers S3/Cloudinary file removal). |
 | 8.5 | **Avatar Upload** | Implement `POST /users/me/avatar` using `multer` for direct multipart upload (max 2MB, `image/*` only) → upload to S3/Cloudinary → update `user.avatarUrl` in database. |
 
 **Deliverables:**
@@ -292,6 +321,11 @@ curl http://localhost:5000/health
 - Public certificate verification endpoint
 - Certificate download streams PDF directly
 
+**Unit Tests (written same day in `src/modules/achievements/tests/` and `src/modules/certificates/tests/`):**
+- Achievement criteria matching logic (e.g., 5 courses completed → unlocks "Course Master")
+- Certificate number format validation (`EDU-YYYY-XXXXX`)
+- Idempotency: re-completing a course does not re-issue a certificate
+
 ---
 
 ### Day 10 — Student & Instructor Dashboards
@@ -323,8 +357,8 @@ curl http://localhost:5000/health
 | 11.1 | **Bookmarks Module** | Implement `POST /bookmarks/toggle { courseId?, lessonId? }` (idempotent toggle — creates if not exists, deletes if exists), `GET /bookmarks` (list all user bookmarks with course/lesson details, paginated). |
 | 11.2 | **Reviews Module** | Implement `POST /courses/:id/reviews { rating, comment }` (enrolled students only, one review per student per course), `GET /courses/:id/reviews` (paginated reviews with user names and avatars), `PUT /courses/:courseId/reviews` (update own review), `DELETE /courses/:courseId/reviews` (delete own or admin moderation). |
 | 11.3 | **Review Aggregation** | On review create/update/delete: recalculate and update `course.rating` as the average of all review ratings for that course. Use `prisma.$transaction` to ensure consistency. |
-| 11.4 | **Email Integration** | Implement `src/integrations/email/index.js` with SendGrid / Brevo REST API client (`axios`). Create template functions for: welcome email, email verification, password reset, enrollment confirmation, course completion congratulations (with PDF certificate attachment), and admin takedown notices. |
-| 11.5 | **Email Dispatch Points** | Wire email dispatch into: auth registration (verification email), forgot password (reset link), enrollment creation (welcome to course), course completion (congratulations + certificate), admin course unpublish (takedown notice to instructor), admin user ban (account suspension notice). |
+| 11.4 | **Email Integration (Replace Stub)** | Replace the console-logging email stub (created on Day 3) in `src/integrations/email/index.js` with the real SendGrid / Brevo REST API client (`axios`). The exported interface (`sendVerificationEmail`, `sendPasswordResetEmail`, `sendEnrollmentConfirmation`, `sendCourseCompletionEmail`, `sendTakedownNotice`) remains identical — only the internal implementation changes from `logger.info()` to `axios.post()`. Add HTML email template functions for all 6 email types. |
+| 11.5 | **Email Dispatch Verification** | Verify that all existing email dispatch points (auth registration, forgot password, enrollment creation, course completion, admin course unpublish, admin user ban) now fire real emails via the new client. No call sites need to change since the stub interface was designed to match. |
 | 11.6 | **Email Resilience** | Emails dispatch asynchronously after database transactions commit. Failures are logged via `pino` but never roll back user-facing operations. Implement retry logic (max 3 attempts with exponential backoff). |
 
 **Deliverables:**
@@ -494,11 +528,12 @@ These concerns are not isolated to a single phase but must be maintained continu
 | :--- | :--- |
 | **Consistent Error Handling** | All services throw `AppError` subclasses. The global error handler in `app.js` catches and formats them. Unhandled rejections and uncaught exceptions trigger graceful shutdown. |
 | **Input Validation** | Every route has a corresponding Zod schema. The `validate()` middleware runs before any controller logic. No raw `req.body` access without prior validation. |
-| **Pagination** | All list endpoints support `?page=&limit=` with defaults (`page=1`, `limit=10`, max `limit=50`). Responses include `pagination` metadata. |
+| **Pagination** | All list endpoints support `?page=&limit=` with defaults (`page=1`, `limit=20`, max `limit=100`). Responses include `pagination` metadata with `hasNextPage` and `hasPrevPage` flags ([apidoc.md §6](./docs/apidoc.md)). |
 | **Soft Deletes** | `User` and `Course` models use `deletedAt` timestamps. All public queries filter `WHERE deletedAt IS NULL`. Admin queries can include deleted records. |
 | **Audit Trail** | Every admin governance action creates an `AuditLog` entry within the same database transaction as the action itself. |
 | **Cache Invalidation** | Redis cache keys follow the pattern `catalog:<resource>:<params>`. Invalidation uses `DEL` with pattern matching on write operations that affect cached data. |
 | **Idempotency** | Lesson completion and bookmark toggle are idempotent. Re-completing a lesson does not re-trigger certificate generation or achievement evaluation if already earned. |
+| **Continuous Unit Testing** | Unit tests for service-layer business logic (scoring math, progress formulas, streak logic, criteria matching) are written in the module's `tests/` folder on the same day the service is implemented. Day 15 focuses on cross-module integration/E2E tests and the coverage sweep. |
 | **Swagger Documentation** | Every endpoint is documented as it is built, not retroactively. Request/response schemas, auth requirements, and example payloads are included. |
 
 ---
