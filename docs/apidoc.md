@@ -4,7 +4,7 @@
 * **API Version:** `v1` (Prefix: `/api/v1` — `GET /health` is deliberately outside the prefix)
 * **Transport:** HTTP/1.1. TLS is terminated at the load balancer in production; the Node process itself serves plain HTTP.
 * **TRD Alignment:** Synchronized with [EduTRD.md](../EduTRD.md) — the TRD is the **source of truth**. Where this document and the TRD disagree, the TRD governs and this file is the defect.
-* **Interactive OpenAPI Specs:** *Not available in the MVP.* No OpenAPI generator is in the dependency set (TRD §3.3); a Swagger UI mount is Phase 2 work.
+* **Interactive OpenAPI Specs:** Served at `/api-docs` by `swagger-ui-express`, with the spec assembled by `swagger-jsdoc` from route annotations (TRD §3.3). The committed `swagger.json` is currently a stub covering `/health` only — and its health schema omits `database` and `redis`, so it does not yet match §8.1.
 
 > [!IMPORTANT]
 > **Port is `3000`, not `5000`.** `.env.example`, `docker-compose.yml`, the `Dockerfile` `EXPOSE`/`HEALTHCHECK`, and TRD §10.2 all specify `3000`. Earlier revisions of this document used `5000` throughout, which made every example URL in it unusable.
@@ -610,7 +610,7 @@ Remove a lesson from curriculum.
 Enroll current student into a course.
 * **Auth Guard:** Student (**verified email required**)
 * **Body:** `{ "courseId": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed" }`
-* **Response `201 Created`:** New active enrollment created (`progressPercent: 0.0`); `course.enrollmentCount` incremented in the same transaction.
+* **Response `201 Created`:** New active enrollment created (`progressPercent: 0.0`); `course.studentCount` and `instructor.studentCount` both incremented in the same transaction.
 * **Response `403 Forbidden`:** Email not verified (TRD §3).
 * **Response `409 Conflict`:** An `ACTIVE` or `COMPLETED` enrollment already exists for this `(userId, courseId)` pair.
 * **Response `422 Unprocessable`:** Course is unpublished or soft-deleted.
@@ -650,8 +650,11 @@ Mark lesson complete and atomically update course progress percentage.
 #### `PATCH /api/v1/enrollments/{courseId}/drop`
 Drop active course enrollment.
 * **Auth Guard:** Authenticated (Enrolled Student)
-* **Response `200 OK`:** Sets enrollment status to `DROPPED`; `course.enrollmentCount` decremented. Preserves lesson progress records for future re-enrollment.
+* **Response `200 OK`:** Sets enrollment status to `DROPPED`. Preserves lesson progress records for future re-enrollment.
 * **Response `409 Conflict`:** Enrollment is already `COMPLETED` — a completed course cannot be dropped, as that would orphan an issued certificate.
+
+> [!IMPORTANT]
+> **Dropping does not decrement any counter.** `Course.studentCount` and `Instructor.studentCount` are **lifetime metrics** — total students ever enrolled and ever taught. They increment on a new enrollment and are never decremented, not on drop and not on soft-delete (TRD §4.2). The corollary is the reactivation guard: a `DROPPED` → `ACTIVE` re-enrollment must **skip** the increment, because that user was already counted the first time. Incrementing on reactivation is the one way this counter can inflate, and it is the case a naive `upsert` gets wrong.
 
 ---
 
@@ -947,7 +950,7 @@ Paginated search across all platform courses.
 Unpublish a violating course with a reason.
 * **Auth Guard:** Admin | **Rate Limit:** 10 req / 15 min | **TRD Alignment:** §5.5
 * **Body:** `{ "reason": "Content policy violation regarding copyright" }`
-* **Response `200 OK`:** Sets `isPublished = false`, decrements `subject.courseCount`, invalidates the public catalog cache, emails the instructor with the `reason` verbatim, and writes an `AuditLog` row (`COURSE_UNPUBLISHED`).
+* **Response `200 OK`:** Sets `isPublished = false`, decrements `subject.courseCount`, invalidates the public catalog cache, emails the instructor with the `reason` verbatim, and writes an `AuditLog` row with `actionType = COURSE_REJECTED` — the `AuditActionType` member that covers takedown (§4.4). There is no `COURSE_UNPUBLISHED` member; writing one raises a Prisma enum error inside the governance transaction and rolls the takedown back.
 
 > [!CAUTION]
 > **Catalog invalidation is `SCAN` + `UNLINK`, never `DEL catalog:courses:*`.** Earlier revisions of this document specified the latter. Redis `DEL` accepts **literal keys only** — a glob is treated as a key name that happens to contain `*`, so the command returns `0`, reports success, and deletes nothing. The catalog then serves the taken-down course from cache until the TTL lapses. The correct implementation iterates the keyspace non-blockingly:
@@ -999,7 +1002,7 @@ Search and filter platform users.
 Promote or change a user's role (`STUDENT`, `INSTRUCTOR`, `ADMIN`).
 * **Auth Guard:** Admin | **Rate Limit:** 10 req / 15 min
 * **Body:** `{ "role": "INSTRUCTOR" }`
-* **Response `200 OK`:** Updated role, `AuditLog` written (`USER_ROLE_CHANGED`). Promotion to `INSTRUCTOR` **auto-creates the `Instructor` profile row** in the same transaction — without it the user holds a role whose every endpoint fails on a missing profile.
+* **Response `200 OK`:** Updated role, `AuditLog` written with `actionType = ROLE_CHANGED` (the enum member is `ROLE_CHANGED`, not `USER_ROLE_CHANGED` — see §4.4). Promotion to `INSTRUCTOR` **auto-creates the `Instructor` profile row** in the same transaction — without it the user holds a role whose every endpoint fails on a missing profile.
 * **Response `409 Conflict`:** Demoting an instructor who owns published courses. Override with `?force=true`, which unpublishes those courses and audits each one (TRD §5.6).
 
 ---
