@@ -30,9 +30,9 @@ The plan follows a **bottom-up construction** approach: infrastructure and secur
 The repository already contains a scaffold: `src/database/schema.prisma` (20 models), `package.json`, `Dockerfile`, `docker-compose.yml`, `vitest.config.js`, and a `src/` tree of empty module files. That scaffold predates the current TRD and disagrees with it in **fourteen** measurable places, and the specification itself carries two internal conflicts that must be settled before any code depends on either reading (0.12–0.13). **Reconcile before writing any feature code** — every one of these is cheap now and expensive after the code that depends on it exists.
 
 > [!NOTE]
-> **Status: the configuration rows are applied; the schema rows are not, by design.** Landed — 0.1, 0.2, 0.7, 0.8, 0.8a, 0.8b, 0.9, 0.10, 0.11, 0.11a, and both spec conflicts (0.12 in the TRD and apidoc, 0.13 in TRD §4.2). Outstanding — **0.3, 0.4, 0.5, 0.6, and the schema half of 0.13**, which are the same edits task **1.4** already owns.
+> **Status: every row is applied.** The configuration rows landed first — 0.1, 0.2, 0.7, 0.8, 0.8a, 0.8b, 0.9, 0.10, 0.11, 0.11a, and both spec conflicts (0.12 in the TRD and apidoc, 0.13 in TRD §4.2). The schema rows — **0.3, 0.4, 0.5, 0.6, and the schema half of 0.13** — were deliberately deferred to task **1.4**, which has since landed them in the initial migration.
 >
-> That overlap is deliberate and 1.4 is where they happen. Applying them here would mean editing `schema.prisma` twice and running `migrate dev` against a schema Day 1 then rewrites, and the four hand-written statements of 1.4a have to land in the *same* migration as the columns they constrain — 0.3–0.6 in isolation produce a migration that 1.4 cannot cleanly extend. Read 0.3–0.6 as the acceptance criteria for 1.4, not as work preceding it. The one thing the two rows must not do is disagree: 1.4 says 20 models and 9 enums, and so does 0.3.
+> That overlap was deliberate and 1.4 was the right place for it. Applying them here would have meant editing `schema.prisma` twice and running `migrate dev` against a schema Day 1 then rewrites, and the four hand-written statements of 1.4a have to land in the *same* migration as the columns they constrain — 0.3–0.6 in isolation produce a migration that 1.4 cannot cleanly extend. Read 0.3–0.6 as the acceptance criteria for 1.4, not as work preceding it. The one thing the two rows must not do is disagree: 1.4 says 20 models and 9 enums, and so does 0.3.
 >
 > Three of the rows above (**0.8a, 0.8b, 0.11a**) were **not** in the original table and were found by applying it. All three are the same class — a repository-level defect that breaks the CI gate or pollutes the tree, with no feature code to blame it on later. Two of them, 0.8a and 0.8b, are consecutive `ci.yml` gates: on the current `HEAD` the lint step and the test step both fail, in that order, on a push containing no application code at all.
 
@@ -228,7 +228,10 @@ CREATE UNIQUE INDEX bookmarks_user_lesson_uniq
 
 -- 2. Slug uniqueness applies to the live set only. A plain @@unique would let a
 --    soft-deleted course reserve its slug forever, so a course cannot be
---    recreated under the name it was deleted under.
+--    recreated under the name it was deleted under. This index is therefore the
+--    ONLY uniqueness on courses.slug — the column carries no @unique, because
+--    the unconditional index @unique creates rejects the reuse before this one
+--    is consulted, and lookups become findFirst({ slug, deletedAt: null }).
 CREATE UNIQUE INDEX courses_slug_live_uniq
   ON courses (slug)
   WHERE deleted_at IS NULL;

@@ -1,3 +1,22 @@
+// EduSphere data model — 20 models, 9 enums.
+//
+// EduTRD.md §4.2 is the single source of truth for this file. Where this schema
+// and that section disagree, the TRD wins and this file is the defect.
+//
+// FOUR constraints in this model cannot be expressed in Prisma's schema
+// language and live permanently in the initial migration as hand-written SQL
+// (task 1.4a). Prisma will not re-emit them, and `prisma migrate diff` does not
+// see them as drift, so they must never be deleted from that file:
+//
+//   bookmarks_user_course_uniq   partial unique, WHERE lesson_id IS NULL
+//   bookmarks_user_lesson_uniq   partial unique, WHERE lesson_id IS NOT NULL
+//   courses_slug_live_uniq       partial unique, WHERE deleted_at IS NULL
+//   reviews_rating_range         CHECK (rating BETWEEN 1 AND 5)
+//
+// Every table and column is mapped to snake_case. The Prisma-side identifiers
+// (`Bookmark`, `userId`, `deletedAt`) do not exist in PostgreSQL, which is why
+// that SQL addresses unquoted lowercase physical names.
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -46,19 +65,54 @@ enum NotificationType {
   CERTIFICATE
 }
 
+// Achievement evaluation dispatch (§6.11). Free text here would let a seeded
+// criteria string silently match nothing, so the catalog in task 1.5 keys every
+// row to a member of this enum.
+enum AchievementCriteria {
+  COURSES_COMPLETED
+  QUIZ_PERFECT_SCORE
+  STREAK_DAYS
+  LESSONS_COMPLETED
+}
+
+enum AuditActionType {
+  COURSE_APPROVED
+  COURSE_REJECTED
+  COURSE_DELETED
+  COURSE_RESTORED
+  COURSE_REPUBLISHED
+  USER_BANNED
+  USER_UNBANNED
+  ROLE_CHANGED
+  REVIEW_DELETED
+}
+
+// NOTE — COURSE_APPROVED has no writer in the MVP. Instructors self-publish
+// (§5.3); there is no submission queue for an admin to approve, so the member is
+// reserved for a post-MVP moderation gate. Every other member is written by a
+// named endpoint in §6.8 or §6.10. Do not repurpose it for the takedown path —
+// that action writes COURSE_REJECTED.
+
+enum AuditTargetType {
+  COURSE
+  USER
+  REVIEW
+}
+
 model User {
-  id              String            @id @default(uuid()) @db.Uuid
-  fullName        String            @map("full_name")
-  email           String            @unique
-  passwordHash    String            @map("password_hash")
-  role            UserRole          @default(STUDENT)
-  avatarUrl       String?           @map("avatar_url")
+  id              String    @id @default(uuid()) @db.Uuid
+  fullName        String    @map("full_name")
+  email           String    @unique
+  passwordHash    String    @map("password_hash")
+  role            UserRole  @default(STUDENT)
+  avatarUrl       String?   @map("avatar_url")
   bio             String?
-  isEmailVerified Boolean           @default(false) @map("is_email_verified")
-  isBanned        Boolean           @default(false) @map("is_banned")
-  createdAt       DateTime          @default(now()) @map("created_at")
-  updatedAt       DateTime          @updatedAt @map("updated_at")
-  deletedAt       DateTime?         @map("deleted_at")
+  isEmailVerified Boolean   @default(false) @map("is_email_verified")
+  isBanned        Boolean   @default(false) @map("is_banned")
+  emailBounced    Boolean   @default(false) @map("email_bounced")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
 
   instructorProfile Instructor?
   streak            UserStreak?
@@ -70,10 +124,14 @@ model User {
   notifications     Notification[]
   certificates      Certificate[]
   uploadedResources Resource[]
-  auditLogs         AuditLog[]    @relation("AdminAuditLogs")
+  auditLogs         AuditLog[]        @relation("AdminAuditLogs")
 
   @@map("users")
 }
+
+// NOTE — `emailBounced` is set by the inbound delivery webhook (§6.11) on a hard
+// bounce or spam report, so the platform stops sending to a dead mailbox instead
+// of retrying it forever.
 
 model Instructor {
   id           String   @id @default(uuid()) @db.Uuid
@@ -90,17 +148,39 @@ model Instructor {
   @@map("instructors")
 }
 
+// NOTE — Instructor.studentCount Sync Strategy:
+// studentCount is incremented atomically (within prisma.$transaction) each time a NEW
+// enrollment is created for any of the instructor's courses. It is NOT decremented on
+// course drops — it represents total students ever taught (a lifetime metric).
+// A live deduplicated unique-student count can be derived via:
+//   SELECT COUNT(DISTINCT e.user_id) FROM enrollments e
+//   JOIN courses c ON c.id = e.course_id
+//   WHERE c.instructor_id = <instructorId>
+
 model UserStreak {
-  id             String   @id @default(uuid()) @db.Uuid
-  userId         String   @unique @map("user_id") @db.Uuid
-  currentStreak  Int      @default(0) @map("current_streak")
-  longestStreak  Int      @default(0) @map("longest_streak")
-  lastActiveDate DateTime @map("last_active_date") @db.Date
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @unique @map("user_id") @db.Uuid
+  currentStreak  Int       @default(0) @map("current_streak")
+  longestStreak  Int       @default(0) @map("longest_streak")
+  lastActiveDate DateTime? @map("last_active_date") @db.Date
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_streaks")
 }
+
+// NOTE — Streak Day Boundary (Timezone Policy):
+// `lastActiveDate` is a DATE with no time component, so "yesterday" and "today" are only
+// meaningful relative to a fixed timezone. All streak arithmetic is performed in **UTC**:
+// the day key is `new Date().toISOString().slice(0, 10)`. This is a deliberate, documented
+// choice — a user in UTC+13 crosses their streak boundary mid-afternoon local time. Storing
+// a per-user IANA timezone is a Phase 2 enhancement; until then UTC must be applied
+// consistently in both the streak service and any test fixtures, or streak tests will be
+// flaky depending on the CI runner's clock.
+//
+// `lastActiveDate` is nullable so a UserStreak row can be created at registration with a
+// zero streak. A non-nullable column with no default forces every caller to invent a date
+// before the user has ever been active.
 
 model Subject {
   id          String   @id @default(uuid()) @db.Uuid
@@ -118,25 +198,27 @@ model Subject {
 }
 
 model Course {
-  id           String       @id @default(uuid()) @db.Uuid
-  title        String
-  slug         String       @unique
-  description  String
-  subjectId    String       @map("subject_id") @db.Uuid
-  instructorId String       @map("instructor_id") @db.Uuid
-  level        CourseLevel  @default(BEGINNER)
-  price        Decimal      @default(0.00) @db.Decimal(10, 2)
-  language     String       @default("English")
-  duration     String
-  rating       Float        @default(0.0)
-  studentCount Int          @default(0) @map("student_count")
-  isFeatured   Boolean      @default(false) @map("is_featured")
-  isPublished  Boolean      @default(false) @map("is_published")
-  requirements Json         @default("[]")
-  objectives   Json         @default("[]")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
-  deletedAt    DateTime?    @map("deleted_at")
+  id              String      @id @default(uuid()) @db.Uuid
+  title           String
+  slug            String
+  description     String
+  subjectId       String      @map("subject_id") @db.Uuid
+  instructorId    String      @map("instructor_id") @db.Uuid
+  level           CourseLevel @default(BEGINNER)
+  price           Decimal     @default(0.00) @db.Decimal(10, 2)
+  language        String      @default("English")
+  durationMinutes Int         @default(0) @map("duration_minutes")
+  rating          Float       @default(0.0)
+  reviewCount     Int         @default(0) @map("review_count")
+  studentCount    Int         @default(0) @map("student_count")
+  isFeatured      Boolean     @default(false) @map("is_featured")
+  isPublished     Boolean     @default(false) @map("is_published")
+  publishedAt     DateTime?   @map("published_at")
+  requirements    Json        @default("[]")
+  objectives      Json        @default("[]")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  deletedAt       DateTime?   @map("deleted_at")
 
   subject      Subject       @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   instructor   Instructor    @relation(fields: [instructorId], references: [id], onDelete: Restrict)
@@ -150,9 +232,40 @@ model Course {
 
   @@index([subjectId])
   @@index([instructorId])
-  @@index([slug])
+  @@index([isPublished, deletedAt])
   @@map("courses")
 }
+
+// NOTE — `slug` carries NO `@unique`, deliberately. Its only uniqueness is the hand-written
+// partial index `courses_slug_live_uniq` (task 1.4a), scoped to `deleted_at IS NULL`, so a
+// soft-deleted course does not hold a slug hostage forever. Declaring both does not add
+// safety, it removes it: the unconditional `courses_slug_key` that `@unique` creates fires
+// first, the partial index never gets a chance to allow the reuse, and the reuse the partial
+// index exists to permit stays blocked. Verified — the insert failed on `courses_slug_key`.
+//
+// The cost is that `findUnique({ where: { slug } })` is gone: slug lookups are
+// `findFirst({ where: { slug, deletedAt: null } })`. That is the correct query either way,
+// because `findUnique` on slug would return a soft-deleted course, which `GET /courses/:slug`
+// must not serve — and now a stale `findUnique` call site is a build error, not a silent leak.
+// `@@index([slug])` stays absent: that predicate implies the partial index's predicate, so
+// Postgres serves the lookup from `courses_slug_live_uniq`.
+//
+// NOTE — `durationMinutes` replaces the former free-text `duration String`. The student
+// dashboard (§6.2) must report "total learning hours", which is not computable from strings
+// like "6 weeks" or "1h 30m". It is denormalized as the sum of `Lesson.durationMinutes`
+// across the course and recalculated inside the same transaction as any lesson
+// create/update/delete.
+//
+// NOTE — `publishedAt` makes the §5.3 response contract (`{ isPublished, publishedAt }`)
+// satisfiable; without it that endpoint returns a timestamp with nowhere to be stored.
+//
+// NOTE — `reviewCount` is stored alongside `rating` so the average can be updated
+// incrementally and audited. See the Denormalized Counter Integrity table in §4.2:
+// create and delete move the count, but all three write paths — including update —
+// must recompute the average.
+//
+// NOTE — `@@index([isPublished, deletedAt])` backs the public catalog predicate, which is
+// `isPublished = true AND deletedAt IS NULL` on every guest-facing read.
 
 model Module {
   id         String   @id @default(uuid()) @db.Uuid
@@ -170,27 +283,43 @@ model Module {
 }
 
 model Lesson {
-  id          String         @id @default(uuid()) @db.Uuid
-  moduleId    String         @map("module_id") @db.Uuid
-  title       String
-  type        LessonType     @default(TEXT)
-  duration    String
-  content     String         @db.Text
-  videoUrl    String?        @map("video_url")
-  codeSnippet String?        @map("code_snippet") @db.Text
-  orderIndex  Int            @map("order_index")
-  quizId      String?        @unique @map("quiz_id") @db.Uuid
-  createdAt   DateTime       @default(now()) @map("created_at")
-  updatedAt   DateTime       @updatedAt @map("updated_at")
+  id              String     @id @default(uuid()) @db.Uuid
+  moduleId        String     @map("module_id") @db.Uuid
+  title           String
+  type            LessonType @default(TEXT)
+  durationMinutes Int        @default(0) @map("duration_minutes")
+  content         String     @db.Text
+  videoUrl        String?    @map("video_url")
+  codeSnippet     String?    @map("code_snippet") @db.Text
+  orderIndex      Int        @map("order_index")
+  isFreePreview   Boolean    @default(false) @map("is_free_preview")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
 
-  module   Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  quiz     Quiz?            @relation("LessonToQuiz", fields: [quizId], references: [id])
-  progress LessonProgress[]
+  module    Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  quiz      Quiz?            @relation("LessonToQuiz")
+  progress  LessonProgress[]
   bookmarks Bookmark[]
 
+  @@unique([moduleId, orderIndex])
   @@index([moduleId])
   @@map("lessons")
 }
+
+// NOTE — No `quizId` column. The Lesson ↔ Quiz foreign key lives EXCLUSIVELY on
+// `Quiz.lessonId`; `quiz Quiz?` is the back-reference side and holds no scalar field.
+// Declaring a scalar FK on both sides passes `prisma validate`, but Prisma only maintains
+// the side that owns the relation — the other column is created with a unique constraint
+// and then left permanently NULL, giving two columns for one link. The quiz→lesson
+// completion trigger in §5.2 depends on this link, so the ambiguity was load-bearing.
+//
+// NOTE — `isFreePreview` gates guest access to lesson bodies (§2.3). `durationMinutes`
+// replaces the former free-text `duration String` so learning hours are summable.
+//
+// NOTE — `@@unique([moduleId, orderIndex])` prevents two lessons from claiming the same
+// position, which would make the sequential-unlock rule in §5.2 non-deterministic. Reordering
+// must therefore be performed inside a transaction (shift affected rows, then write the
+// target), not as isolated updates.
 
 model Enrollment {
   id              String           @id @default(uuid()) @db.Uuid
@@ -211,6 +340,15 @@ model Enrollment {
   @@map("enrollments")
 }
 
+// NOTE — `@@unique([userId, courseId])` is unconditional and re-enrollment is an UPSERT,
+// not a second row. A partial index scoped to `status = 'ACTIVE'` looks like the way to
+// allow re-enrollment and is the wrong shape: it permits an unbounded set of historical
+// rows per (user, course), which defeats the DROPPED → ACTIVE reactivation guard on the
+// lifetime counters `Course.studentCount` and `Instructor.studentCount`. That guard is
+// written as "this row already existed", which is only decidable if there is exactly one
+// row. Progress rows survive reactivation because they hang off the enrollment that was
+// never deleted.
+
 model LessonProgress {
   id           String    @id @default(uuid()) @db.Uuid
   enrollmentId String    @map("enrollment_id") @db.Uuid
@@ -227,16 +365,17 @@ model LessonProgress {
 }
 
 model Quiz {
-  id           String         @id @default(uuid()) @db.Uuid
-  courseId     String         @map("course_id") @db.Uuid
-  lessonId     String?        @unique @map("lesson_id") @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  courseId     String   @map("course_id") @db.Uuid
+  lessonId     String?  @unique @map("lesson_id") @db.Uuid
   title        String
-  passingScore Int            @default(70) @map("passing_score")
-  createdAt    DateTime       @default(now()) @map("created_at")
-  updatedAt    DateTime       @updatedAt @map("updated_at")
+  passingScore Int      @default(70) @map("passing_score")
+  maxAttempts  Int?     @map("max_attempts")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   course    Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  lesson    Lesson?        @relation("LessonToQuiz")
+  lesson    Lesson?        @relation("LessonToQuiz", fields: [lessonId], references: [id], onDelete: Cascade)
   questions QuizQuestion[]
   attempts  QuizAttempt[]
 
@@ -244,12 +383,27 @@ model Quiz {
   @@map("quizzes")
 }
 
+// NOTE — `Quiz.lessonId` is the ONLY foreign key for the Lesson ↔ Quiz relation and carries
+// `fields:`/`references:`. `Lesson` has no `quizId` column. See the Lesson note above.
+//
+// NOTE — `maxAttempts` is NULLABLE with no column default: NULL means unlimited, and is
+// permitted only for ungraded practice quizzes not linked to a lesson. The cap is enforced
+// by the assessment engine in §5.2. Without it, the post-submission `breakdown` payload lets
+// a student harvest the answer key with throwaway attempts and then retake, which defeats
+// the server-side-grading design and contradicts the §2.4 "zero answer leakage" metric.
+// A non-nullable `Int @default(3)` is worse than absent: it silently caps the practice
+// quizzes the TRD exempts and makes "unlimited" unrepresentable. The default of 3 is a
+// SEED value (task 1.5), not a column default.
+//
+// NOTE — `passingScore` and all `QuizAttempt.score` values are PERCENTAGES (0–100), never
+// raw correct-answer counts.
+
 model QuizQuestion {
   id                 String           @id @default(uuid()) @db.Uuid
   quizId             String           @map("quiz_id") @db.Uuid
   questionText       String           @map("question_text")
   type               QuizQuestionType @default(MULTIPLE_CHOICE)
-  options            Json             // Array of strings: ["Option A", "Option B", ...]
+  options            Json // Array of strings: ["Option A", "Option B", ...]
   correctAnswerIndex Int              @map("correct_answer_index")
   orderIndex         Int              @map("order_index")
   createdAt          DateTime         @default(now()) @map("created_at")
@@ -261,23 +415,39 @@ model QuizQuestion {
   @@map("quiz_questions")
 }
 
+// NOTE — Question Shape Validation (Zod, cross-field — the DB cannot express this):
+//   • MULTIPLE_CHOICE: `options` must be 2–6 unique non-empty strings.
+//   • TRUE_FALSE:      `options` must be exactly ["True", "False"]; index 0 = True.
+//   • ALWAYS:          0 <= correctAnswerIndex < options.length.
+// A missing bounds check makes it possible to persist a question no student can ever answer
+// correctly, silently corrupting every subsequent score.
+
 model QuizAttempt {
   id             String   @id @default(uuid()) @db.Uuid
   userId         String   @map("user_id") @db.Uuid
   quizId         String   @map("quiz_id") @db.Uuid
-  score          Float
+  attemptNumber  Int      @map("attempt_number")
+  score          Float // PERCENTAGE 0.0–100.0, not a raw correct-answer count
   totalQuestions Int      @map("total_questions")
-  answers        Json     // Array of submitted answer indexes
+  answers        Json // Array of submitted answer indexes, positionally aligned to questions
   isPassed       Boolean  @map("is_passed")
   attemptedAt    DateTime @default(now()) @map("attempted_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   quiz Quiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@unique([userId, quizId, attemptNumber])
+  @@index([userId, quizId])
   @@index([quizId])
   @@map("quiz_attempts")
 }
+
+// NOTE — `attemptNumber` is required to enforce `Quiz.maxAttempts` without a COUNT-then-INSERT
+// race. It is derived inside the submission transaction and the composite unique constraint
+// makes a concurrent double-submit fail loudly rather than silently granting a bonus attempt.
+//
+// NOTE — `@@index([userId, quizId])` serves both the attempt-cap check and
+// `GET /quizzes/:id/attempts`, which is owner-scoped (§6.7).
 
 model Resource {
   id          String   @id @default(uuid()) @db.Uuid
@@ -309,16 +479,24 @@ model Bookmark {
   course Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
   lesson Lesson? @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, courseId, lessonId])
   @@index([userId])
   @@map("bookmarks")
 }
+
+// NOTE — Uniqueness is enforced by TWO PARTIAL UNIQUE INDEXES added in hand-written migration
+// SQL (task 1.4a), NOT by `@@unique([userId, courseId, lessonId])`. Postgres treats NULL as
+// distinct in unique indexes, so the composite version accepts unlimited duplicate
+// (user, course, NULL) rows and `POST /bookmarks/toggle` never finds the existing row to
+// toggle off — it inserts forever. One table serves two kinds of row (course-level, with
+// lesson_id NULL, and lesson-level), and a single unique index cannot express both. Zod must
+// additionally enforce that exactly one of `courseId` / `lessonId` is supplied per request:
+// both or neither is a 422.
 
 model Review {
   id                    String   @id @default(uuid()) @db.Uuid
   userId                String   @map("user_id") @db.Uuid
   courseId              String   @map("course_id") @db.Uuid
-  rating                Int      // 1 to 5
+  rating                Int // 1 to 5, enforced by the reviews_rating_range CHECK (task 1.4a)
   comment               String   @db.Text
   isFeaturedTestimonial Boolean  @default(false) @map("is_featured_testimonial")
   createdAt             DateTime @default(now()) @map("created_at")
@@ -332,19 +510,30 @@ model Review {
   @@map("reviews")
 }
 
+// NOTE — `Review` has NO `deletedAt`. §4.2 puts soft delete on `User` and `Course` only, so
+// review deletion is a hard delete and `@@unique([userId, courseId])` is unconditional:
+// deleting a review frees the slot and the author may write a new one. Do not add a
+// `WHERE deleted_at IS NULL` partial index here — it would reference a column that does not
+// exist. Admin moderation still leaves a trail: an admin `DELETE /reviews/:id` writes
+// `AuditLog (REVIEW_DELETED)` in the same transaction (§6.8).
+
 model Achievement {
-  id            String   @id @default(uuid()) @db.Uuid
-  name          String   @unique
+  id            String              @id @default(uuid()) @db.Uuid
+  title         String              @unique
   description   String
   icon          String
-  criteriaType  String   @map("criteria_type")  // COURSES_COMPLETED, QUIZ_PERFECT_SCORE, STREAK_DAYS
-  criteriaValue Int      @map("criteria_value")
-  createdAt     DateTime @default(now()) @map("created_at")
+  criteriaType  AchievementCriteria @map("criteria_type")
+  criteriaValue Int                 @map("criteria_value")
+  createdAt     DateTime            @default(now()) @map("created_at")
 
   userAchievements UserAchievement[]
 
   @@map("achievements")
 }
+
+// NOTE — the field is `title`, not `name`, and it is the upsert key the idempotent seed in
+// task 1.5 uses. `criteriaType` is the enum member and `criteriaValue` the numeric threshold;
+// `criteria` and `threshold` do not exist. These are the names apidoc §8.12 returns.
 
 model UserAchievement {
   id            String   @id @default(uuid()) @db.Uuid
@@ -361,19 +550,31 @@ model UserAchievement {
 }
 
 model Notification {
-  id        String           @id @default(uuid()) @db.Uuid
-  userId    String           @map("user_id") @db.Uuid
-  type      NotificationType @default(SYSTEM)
-  title     String
-  message   String
-  isRead    Boolean          @default(false) @map("is_read")
-  createdAt DateTime         @default(now()) @map("created_at")
+  id            String           @id @default(uuid()) @db.Uuid
+  userId        String           @map("user_id") @db.Uuid
+  type          NotificationType @default(SYSTEM)
+  title         String
+  message       String
+  isRead        Boolean          @default(false) @map("is_read")
+  deliveryState String?          @map("delivery_state")
+  deliveredAt   DateTime?        @map("delivered_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
   @@map("notifications")
 }
+
+// NOTE — `@@index([userId, isRead])` backs the unread-count aggregate returned by
+// `GET /notifications` (§6.9); `@@index([userId, createdAt])` backs its default ordering.
+// A single-column `@@index([userId])` forces a filter/sort on every read.
+//
+// NOTE — `deliveryState` is a free-text String on purpose, written by the inbound email
+// webhook (§6.11). An unrecognised provider event must be STORED, not rejected: a 500 there
+// makes the provider redeliver the same payload indefinitely. An enum would throw on the
+// first event name a provider adds.
 
 model Certificate {
   id             String   @id @default(uuid()) @db.Uuid
@@ -381,7 +582,7 @@ model Certificate {
   userId         String   @map("user_id") @db.Uuid
   courseId       String   @map("course_id") @db.Uuid
   issuedAt       DateTime @default(now()) @map("issued_at")
-  certificateUrl String   @map("certificate_url")
+  certificateUrl String?  @map("certificate_url")
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
@@ -391,15 +592,22 @@ model Certificate {
   @@map("certificates")
 }
 
+// NOTE — `certificateUrl` is NULLABLE by design. The certificate RECORD (with its unique
+// `certificateNo`) is created inside the completion transaction in §5.1, but the PDF is
+// rendered LAZILY on first `GET /certificates/:id/download` and the resulting storage URL is
+// then written back. Rendering a pdfkit document and uploading it to S3 inside the
+// lesson-completion request cannot meet the §2.4 latency budget, and a storage outage must not
+// be able to roll back a student's legitimately earned completion.
+
 model AuditLog {
-  id          String   @id @default(uuid()) @db.Uuid
-  adminId     String   @map("admin_id") @db.Uuid
-  actionType  String   @map("action_type")  // COURSE_APPROVED, COURSE_REJECTED, COURSE_DELETED, USER_BANNED, USER_UNBANNED, ROLE_CHANGED
-  targetType  String   @map("target_type")  // COURSE, USER
-  targetId    String   @map("target_id") @db.Uuid
+  id          String          @id @default(uuid()) @db.Uuid
+  adminId     String          @map("admin_id") @db.Uuid
+  actionType  AuditActionType @map("action_type")
+  targetType  AuditTargetType @map("target_type")
+  targetId    String          @map("target_id") @db.Uuid
   reason      String?
-  metadata    Json?    // Additional context
-  performedAt DateTime @default(now()) @map("performed_at")
+  metadata    Json? // Additional context
+  performedAt DateTime        @default(now()) @map("performed_at")
 
   admin User @relation("AdminAuditLogs", fields: [adminId], references: [id], onDelete: Restrict)
 
@@ -408,3 +616,8 @@ model AuditLog {
   @@index([performedAt])
   @@map("audit_logs")
 }
+
+// NOTE — `targetId` is a bare @db.Uuid with NO foreign key, deliberately: it addresses a
+// course, a user, or a review depending on `targetType`, and a polymorphic column cannot
+// carry a single FK. The audit trail must also survive the hard deletion of its target —
+// a REVIEW_DELETED row whose target no longer exists is the normal case, not an orphan.

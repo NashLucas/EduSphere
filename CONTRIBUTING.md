@@ -261,16 +261,17 @@ res.status(201).json(created(newModule, "Module added to curriculum"));
 model Course {
   id           String    @id @default(uuid()) @db.Uuid
   title        String
-  slug         String    @unique
+  slug         String
   subjectId    String    @map("subject_id") @db.Uuid
   deletedAt    DateTime? @map("deleted_at")
 
   @@index([subjectId])
-  @@index([slug])
   @@map("courses")
 }
 
 ```
+
+* `Course.slug` shows the edge of the index rule: it is a lookup slug with neither `@unique` nor `@@index([slug])`, because both are supplied by the hand-written partial unique `courses_slug_live_uniq ON courses (slug) WHERE deleted_at IS NULL` ([TRD §4.2](./EduTRD.md)). Adding `@unique` back shadows that index — the unconditional one rejects a reuse first — and a soft-deleted course keeps its slug forever. `Subject.slug`, which has no soft delete, does carry `@unique`.
 
 ### Non-Blocking Side Effects
 

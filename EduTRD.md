@@ -361,7 +361,7 @@ erDiagram
     COURSE {
         uuid id PK
         string title
-        string slug UK
+        string slug UK "live rows only"
         uuid subjectId FK
         uuid instructorId FK
         enum level
@@ -497,7 +497,7 @@ erDiagram
 > **Single Source of Truth for the Lesson ↔ Quiz Link:** The foreign key lives **exclusively** on `Quiz.lessonId` (a quiz is authored *for* a lesson). `Lesson` has **no** `quizId` column. Earlier revisions declared a scalar FK on *both* sides (`Lesson.quizId @unique` carrying `fields:`/`references:`, plus an orphan `Quiz.lessonId @unique`). That schema passes `prisma validate`, but Prisma only ever maintains the side that owns the relation — the other column is created with a unique constraint and then left permanently `NULL`, giving two columns for one link and a silent data-integrity trap. The quiz→lesson completion trigger in §5.2 depends on this link, so the ambiguity was load-bearing.
 
 > [!NOTE]
-> **Constraints Requiring Hand-Written Migration SQL:** Three constraints in this model cannot be expressed in Prisma schema syntax and **must** be added manually to the generated migration. They are not optional hardening — two of them are the only thing enforcing a documented API contract.
+> **Constraints Requiring Hand-Written Migration SQL:** Three constraints in this model cannot be expressed in Prisma schema syntax and **must** be added manually to the generated migration. They are not optional hardening — the bookmark pair and the slug index are the *only* thing enforcing a documented API contract, and the third is defense in depth behind Zod.
 >
 > ```sql
 > -- 1. Bookmark uniqueness. Postgres treats NULLs as DISTINCT in unique indexes, so a
@@ -509,7 +509,11 @@ erDiagram
 >   WHERE lesson_id IS NOT NULL;
 >
 > -- 2. Course slug uniqueness scoped to live rows, so soft-deleted courses do not hold a
-> --    slug hostage forever and block an instructor from reusing the title.
+> --    slug hostage forever and block an instructor from reusing the title. This is the
+> --    ONLY uniqueness on courses.slug: the column deliberately carries no @unique,
+> --    because the unconditional index @unique creates rejects the reuse first and makes
+> --    this one unreachable. Lookups are therefore findFirst({ slug, deletedAt: null }),
+> --    which matches this index — no separate index on slug is needed.
 > CREATE UNIQUE INDEX courses_slug_live_uniq ON courses (slug) WHERE deleted_at IS NULL;
 >
 > -- 3. Rating domain enforcement at the database layer, not Zod alone.
@@ -692,7 +696,7 @@ model Subject {
 model Course {
   id              String       @id @default(uuid()) @db.Uuid
   title           String
-  slug            String       @unique
+  slug            String
   description     String
   subjectId       String       @map("subject_id") @db.Uuid
   instructorId    String       @map("instructor_id") @db.Uuid
@@ -728,9 +732,20 @@ model Course {
   @@map("courses")
 }
 
-// NOTE — `slug` uniqueness is additionally scoped to live rows via a partial index
-// (see the migration SQL above); the @unique here backs Prisma's findUnique. `@@index([slug])`
-// was removed from earlier revisions as redundant — @unique already creates that index.
+// NOTE — `slug` carries NO `@unique`, deliberately. Uniqueness lives solely in the partial
+// index `courses_slug_live_uniq` (see the migration SQL above), scoped to `deleted_at IS NULL`.
+// An earlier revision declared both, and the unconditional index `@unique` creates fires
+// first: the partial index became unreachable and a soft-deleted course held its slug hostage
+// forever — the exact outcome the partial index exists to prevent. Verified empirically, the
+// second insert failed on `courses_slug_key`, never reaching `courses_slug_live_uniq`.
+//
+// The cost is that `findUnique({ where: { slug } })` is no longer available: every slug lookup
+// is `findFirst({ where: { slug, deletedAt: null } })`. That is the correct query regardless,
+// because `findUnique` on slug would return a soft-deleted course, which `GET /courses/:slug`
+// must not serve. Prisma drops `slug` from the generated unique-input type, so a `findUnique`
+// call site fails at build time rather than silently serving deleted rows. `@@index([slug])`
+// is not needed either — that findFirst predicate implies the partial index's predicate, so
+// Postgres uses it for the lookup.
 //
 // NOTE — `durationMinutes` replaces the former free-text `duration String`. The student
 // dashboard (§6.2) must report "total learning hours", which is not computable from strings
