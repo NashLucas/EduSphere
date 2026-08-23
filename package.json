@@ -4,6 +4,10 @@
   "description": "EduSphere E-Learning & Assessment Platform Backend",
   "type": "module",
   "main": "src/server.js",
+  "prisma": {
+    "schema": "src/database/schema.prisma",
+    "seed": "node src/database/seed.js"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
@@ -16,7 +20,7 @@
     "format": "prettier --write \"src/**/*.js\""
   },
   "dependencies": {
-    "@prisma/client": "^6.0.0",
+    "@prisma/client": "~6.19",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^5.0.0",
@@ -35,7 +39,7 @@
   "devDependencies": {
     "eslint": "^8.56.0",
     "prettier": "^3.1.0",
-    "prisma": "^6.0.0",
+    "prisma": "~6.19",
     "supertest": "^7.0.0",
     "vitest": "^4.0.0"
   }

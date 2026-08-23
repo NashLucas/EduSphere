@@ -35,3 +35,49 @@ jobs:
           # Custom validation error message
           headerPattern: '^(\w*)(?:\(([\w$.\-*/ ]*)\))?: (.*)$'
           headerPatternCorrespondence: type, scope, subject
+
+  # The image is otherwise built only by cd.yml, which runs after CI succeeds on
+  # main. That leaves every Dockerfile defect invisible on PRs and on dev, to
+  # surface after merge in the deploy pipeline behind a green CI. Building here
+  # moves that failure onto the PR that causes it.
+  docker-build:
+    name: Docker Image Builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # push: false — this gate proves the image builds; cd.yml owns publishing.
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: edusphere-backend:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A build success does not prove the runtime stage is intact: a missing
+      # Prisma client or a devDependency-only import fails at import time, not at
+      # build time. Importing the client is the cheapest assertion that the
+      # generate output survived the multi-stage copy.
+      - name: Verify runtime stage
+        run: |
+          docker run --rm --entrypoint node \
+            edusphere-backend:pr-${{ github.event.pull_request.number }} \
+            -e "import('@prisma/client').then(m => { if (!m.PrismaClient) { throw new Error('PrismaClient missing from generated client'); } console.log('prisma client OK'); })"
+          echo "--- non-root check ---"
+          test "$(docker run --rm --entrypoint id edusphere-backend:pr-${{ github.event.pull_request.number }} -un)" = "nodeapp"
+          echo "runs as nodeapp OK"
+          echo "--- devDependencies absent ---"
+          for pkg in vitest supertest eslint prettier; do
+            if docker run --rm --entrypoint test edusphere-backend:pr-${{ github.event.pull_request.number }} -d "/app/node_modules/$pkg"; then
+              echo "::error::devDependency $pkg shipped to the runtime image"
+              exit 1
+            fi
+          done
+          echo "no devDependencies in runtime image OK"

@@ -37,7 +37,7 @@ jobs:
 
     env:
       NODE_ENV: test
-      PORT: 5000
+      PORT: 3000
       LOG_LEVEL: error
       CORS_ORIGIN: http://localhost:3000
       FRONTEND_URL: http://localhost:3000

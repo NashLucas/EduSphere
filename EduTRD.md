@@ -269,6 +269,11 @@ tests/
 >
 > Migrations are generated into `src/database/migrations/`. The Dockerfile (§10.1) and CI workflows must not reference a top-level `prisma/` directory — no such directory exists in this project.
 
+> [!CAUTION]
+> **The two keys fail in opposite ways, and only one of them fails loudly.** A missing `schema` key exits 1 with `Could not find Prisma Schema`, naming the two default locations it checked — unmissable. A missing `seed` key produces **no diagnostic at all**: `prisma db seed` exits `0` having printed nothing, so a `&&`-chained verification step passes. The message `The seed command has been executed` is the only observable difference between a configured and an unconfigured `seed` key, which makes it the thing to assert on rather than the exit status.
+>
+> That message is also not evidence the seed did anything. `prisma db seed` spawns the configured command and propagates its exit code without inspecting what happened, so it prints the same success line for a `seed.js` that is empty, or that catches its own errors and logs them. Two requirements follow. `src/database/seed.js` (§1.5 of the plan) must let failures **throw** — a caught-and-logged error exits `0`, and `prisma migrate reset` then reports a fully seeded reset of an empty database. And `npm run db:seed`, which CI invokes, calls `node src/database/seed.js` directly and never reads this key — so a green CI seed step is not evidence the key is configured. `prisma migrate reset` is the consumer that depends on it, it is not run in CI, and its skip is the silent one.
+
 > [!NOTE]
 > **Test File Placement:** Two locations are valid and both must be collected by `vitest.config.js`: co-located module tests at `src/**/tests/*.test.js`, and cross-cutting suites at `tests/{unit,integration}/**/*.test.js`. A config that includes only `src/**/*.test.js` silently collects nothing from `tests/` — see §9.1.
 
@@ -568,7 +573,7 @@ enum AchievementCriteria {
 }
 
 enum AuditActionType {
-  COURSE_APPROVED
+  COURSE_APPROVED    // reserved: no MVP writer — see the note below
   COURSE_REJECTED
   COURSE_DELETED
   COURSE_RESTORED
@@ -578,6 +583,11 @@ enum AuditActionType {
   ROLE_CHANGED
   REVIEW_DELETED
 }
+// NOTE — COURSE_APPROVED has no writer in the MVP. Instructors self-publish
+// (§5.3); there is no submission queue for an admin to approve, so the member is
+// reserved for a post-MVP moderation gate. Every other member is written by a
+// named endpoint in §6.8 or §6.10. Do not repurpose it for the takedown path —
+// that action writes COURSE_REJECTED.
 
 enum AuditTargetType {
   COURSE
@@ -595,6 +605,7 @@ model User {
   bio             String?
   isEmailVerified Boolean           @default(false) @map("is_email_verified")
   isBanned        Boolean           @default(false) @map("is_banned")
+  emailBounced    Boolean           @default(false) @map("email_bounced")
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
   deletedAt       DateTime?         @map("deleted_at")
@@ -958,7 +969,7 @@ model Review {
 
 model Achievement {
   id            String              @id @default(uuid()) @db.Uuid
-  name          String              @unique
+  title         String              @unique
   description   String
   icon          String
   criteriaType  AchievementCriteria @map("criteria_type")
@@ -991,6 +1002,8 @@ model Notification {
   title     String
   message   String
   isRead    Boolean          @default(false) @map("is_read")
+  deliveryState String?      @map("delivery_state")
+  deliveredAt   DateTime?    @map("delivered_at")
   createdAt DateTime         @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1137,7 +1150,7 @@ sequenceDiagram
     API-->>Student: Return Questions + Options + { attemptsUsed, attemptsRemaining }
 
     Student->>API: POST /quizzes/:id/submit { answers: [...] }
-    API->>DB: 1. Assert enrollment ACTIVE & answers length == question count
+    API->>DB: 1. Assert enrollment ACTIVE & the submitted questionId set matches the quiz's question set exactly
     API->>DB: 2. Assert attemptsUsed < maxAttempts (else HTTP 429)
     API->>DB: 3. Fetch Questions WITH correctAnswerIndex
     API->>API: 4. Evaluate score in server memory & determine pass/fail
@@ -1223,7 +1236,7 @@ sequenceDiagram
 > - **Admin Override:** Admins retain the ability to unpublish, reject, or soft-delete any published course after-the-fact if content policy violations are discovered (see Section 5.5).
 > - **Ownership Verification:** Every mutation on `/courses/:id`, `/modules/:id`, or `/lessons/:id` checks that `course.instructorId` matches the authenticated user's `instructorProfile.id` (or `ADMIN` role override).
 > - **Atomic Validation:** Publishing fails with HTTP 422 if the course lacks at least 1 module and 1 playable lesson.
-> - **Cache Eviction:** Successful publishing evicts the Redis `catalog:courses:*` keyspace — via `SCAN` + `UNLINK`, **not** `DEL` with a glob (see §7.1) — so guests immediately see the new course.
+> - **Cache Eviction:** Successful publishing evicts the Redis `cache:courses:*` keyspace — via `SCAN` + `UNLINK`, **not** `DEL` with a glob (see §7.1) — so guests immediately see the new course.
 
 > [!CAUTION]
 > **Publish Transitions Must Be Guarded, Not Just Applied.** Step 6 increments `subject.courseCount`, which makes the operation non-idempotent. `PUT /courses/:id { isPublished: true }` sent twice — a double-click, a client retry, a false→true→false→true toggle — inflates the counter permanently, and the public catalog then advertises course counts that do not match the courses it returns.
@@ -1301,7 +1314,7 @@ sequenceDiagram
         Admin->>API: 2a. PATCH /admin/courses/:id/unpublish { reason: "Policy Violation" }
         API->>DB: Set course.isPublished = false & Decrement subject.course_count
         API->>DB: Record AuditLog (COURSE_REJECTED)
-        API->>Cache: Evict catalog:courses:* (SCAN + UNLINK)
+        API->>Cache: Evict cache:courses:* (SCAN + UNLINK)
         API->>Email: Send Takedown Notice & Detailed Reason to Instructor
         API-->>Admin: Return HTTP 200 { status: "UNPUBLISHED" }
     else Soft-Delete Infringing Course
@@ -1309,7 +1322,7 @@ sequenceDiagram
         API->>DB: Set course.deletedAt = now(), isPublished = false
         API->>DB: Decrement subject.course_count (if it was published)
         API->>DB: Record AuditLog (COURSE_DELETED)
-        API->>Cache: Evict catalog:courses:* (SCAN + UNLINK)
+        API->>Cache: Evict cache:courses:* (SCAN + UNLINK)
         API->>Email: Send Removal Notice to Instructor
         API-->>Admin: Return HTTP 200 { status: "DELETED" }
     else Restore / Republish
@@ -1362,7 +1375,7 @@ sequenceDiagram
 > When an Admin bans an account, the backend sets `user.isBanned = true`, revokes every Redis session key for that user, and writes the ban into the `user:state:<id>` fast-path key so the very next request is rejected without a database round-trip. This prevents the user from refreshing access across all active web and mobile client sessions. The `isBanned` flag is separate from `deletedAt` soft-deletion, allowing admins to unban accounts later without data loss.
 
 > [!WARNING]
-> **`DEL` Does Not Accept Glob Patterns.** Earlier revisions of this document specified `DEL session:<id>:*` here, `DEL catalog:courses:*` in §5.3/§5.5, and the same pattern in the account-ban acceptance criterion (now AC-13). Redis `DEL` takes literal keys only — issued as written, these calls delete a key *named* `session:<id>:*`, succeed with a reply of `0`, and **silently revoke nothing**, leaving a banned user's sessions fully live until natural expiry. That is a security control that appears to work and does not.
+> **`DEL` Does Not Accept Glob Patterns.** Earlier revisions of this document specified `DEL session:<id>:*` here, `DEL catalog:courses:*` in §5.3/§5.5, and the same pattern in the account-ban acceptance criterion (now AC-13). Redis `DEL` takes literal keys only — issued as written, these calls delete a key *named* `session:<id>:*`, succeed with a reply of `0`, and **silently revoke nothing**, leaving a banned user's sessions fully live until natural expiry. That is a security control that appears to work and does not. Note that the prefix quoted above is historical on a second count: the catalog namespace is **`cache:courses:*`** as declared in §7.1, and the `catalog:` spellings in §5.3/§5.5 have been corrected to match. `catalog:` appears nowhere in the current specification.
 >
 > The correct mechanisms are specified in §7.1: an explicit **session index set** for per-user revocation (O(1), exact) and **`SCAN` + `UNLINK`** for catalog cache eviction (non-blocking, pattern-based). `KEYS` must never be used at runtime — it blocks the single-threaded server for the duration of a full keyspace walk.
 
@@ -1610,7 +1623,7 @@ All API endpoints are prefixed with `/api/v1` and produce standardized JSON enve
 
 | Method | Endpoint | Auth Guard | Purpose |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/achievements` | Public | Lists the achievement catalog (title, description, icon, `criteriaType`, `criteriaValue`). |
+| `GET` | `/achievements` | Public | Lists the achievement catalog (`title`, description, icon, `criteriaType`, `criteriaValue`). |
 | `GET` | `/users/me/achievements` | Authenticated | The caller's earned achievements with `earnedAt`, plus progress toward unearned ones. Defined in §6.2 and listed here for completeness — **one path, not two**. |
 | `POST` | `/admin/achievements` | Admin | Creates an achievement definition. `criteriaType` must be a valid `AchievementCriteria` enum member. |
 | `PUT` | `/admin/achievements/:id` | Admin | Updates an achievement definition. Does **not** retroactively revoke already-earned `UserAchievement` rows. |
@@ -1625,7 +1638,9 @@ All API endpoints are prefixed with `/api/v1` and produce standardized JSON enve
 > [!CAUTION]
 > **The Email Webhook Is Authenticated by Signature, Not by JWT.** `POST /webhooks/email` is the one route on the platform that is neither public nor session-authenticated. It must verify the provider's signature header (SendGrid `X-Twilio-Email-Event-Webhook-Signature` over the ECDSA public key, or Brevo's shared-secret HMAC) against the **raw, unparsed** request body — which means this route needs `express.raw()` mounted *before* the global `express.json()` parser, since re-serializing parsed JSON produces a different byte sequence and the signature will never match.
 >
-> The route is required because §2.4 makes "≥ 95% email verification delivery rate" a success metric, and delivery is a fact only the provider knows. Events update the corresponding `Notification` row's delivery state; a `bounce` or `spam` event on a verification email additionally flags the address so the platform stops retrying a dead mailbox. Unsigned or badly-signed requests are dropped with HTTP 401 and **never** processed optimistically — an unauthenticated writer on this route could forge delivery confirmations for mail that was never sent.
+> The route is required because §2.4 makes "≥ 95% email verification delivery rate" a success metric, and delivery is a fact only the provider knows. Events update the corresponding `Notification` row's `deliveryState` / `deliveredAt`; a `bounce` or `spam` event on a verification email additionally sets `User.emailBounced` so the platform stops retrying a dead mailbox. Unsigned or badly-signed requests are dropped with HTTP 401 and **never** processed optimistically — an unauthenticated writer on this route could forge delivery confirmations for mail that was never sent.
+>
+> `Notification.deliveryState` is a nullable **String**, not an enum — the sole deliberate exception to the enum-over-free-text rule elsewhere in this document. The vocabulary belongs to SendGrid / Brevo, not to this platform: a provider adding an event kind must not make a Prisma enum write throw inside the webhook handler, because a 500 there causes the provider to retry the same payload indefinitely. Unrecognised event names are stored verbatim and ignored by consumers.
 
 ---
 
@@ -1745,6 +1760,7 @@ npm run test:watch       # Interactive watch mode for local development
 npm run test:unit        # Unit tests only  (vitest run tests/unit src)
 npm run test:integration # Supertest HTTP integration against the test database
 npm run test:coverage    # Target: >85% code coverage across services
+npm run test:run         # Single-pass alias invoked by ci.yml
 ```
 
 > [!CAUTION]
@@ -1754,9 +1770,10 @@ npm run test:coverage    # Target: >85% code coverage across services
 > "scripts": {
 >   "test": "vitest run",
 >   "test:watch": "vitest",
->   "test:unit": "vitest run --dir tests/unit",
+>   "test:unit": "vitest run tests/unit src",
 >   "test:integration": "vitest run --dir tests/integration",
 >   "test:coverage": "vitest run --coverage",
+>   "test:run": "vitest run",
 >   "db:reconcile": "node src/database/reconcile.js"
 > }
 > ```
@@ -1797,7 +1814,13 @@ npm run test:coverage    # Target: >85% code coverage across services
 ### 10.1 Multi-Stage Dockerfile
 
 ```dockerfile
-# Stage 1: Build & Prisma Generation
+# Stage 1: Production dependencies only
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Stage 2: Build & Prisma Generation
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
@@ -1806,12 +1829,13 @@ COPY src/database/schema.prisma ./src/database/schema.prisma
 RUN npx prisma generate
 COPY . .
 
-# Stage 2: Production Runtime
+# Stage 3: Production Runtime
 FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN addgroup -S nodejs && adduser -S nodeapp -G nodejs
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/src ./src
 USER nodeapp
@@ -1821,13 +1845,22 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 CMD ["node", "src/server.js"]
 ```
 
+> [!IMPORTANT]
+> **Why three stages, and why `node_modules` is assembled from two of them.** The `deps` stage exists solely to produce a `node_modules` tree that never contained a devDependency — see defect 4 below. `prisma generate` cannot run there, because the prisma CLI *is* a devDependency, so generation happens in `builder` and only its output is carried forward.
+>
+> That output is **`node_modules/.prisma/client`**, not `node_modules/@prisma/client`, despite what the CLI prints on success (`Generated Prisma Client to ./node_modules/@prisma/client` is misleading). `@prisma/client` is the stock npm package and holds no schema-specific code — its `default.js` does `require('.prisma/client/default')`. The generated models and the query engine binary live under `.prisma/client`. The runtime therefore needs both halves: the package from `deps`, the generated client from `builder`. Copying only one produces an image that builds cleanly and throws on first query.
+>
+> Because the schema declares no `binaryTargets`, the query engine is compiled for the platform `generate` ran on. All three stages must stay on the **same base image**; changing one `FROM` yields a missing-engine error at runtime that no build step detects.
+>
+> A successful `docker build` is therefore not evidence the image works. CI must **run** the built image and assert that `@prisma/client` imports and exposes `PrismaClient`, that `id -un` is `nodeapp`, and that no devDependency directory survives under `/app/node_modules`.
+
 > [!CAUTION]
 > **Four Defects in the Previous Dockerfile, Each Independently Fatal.**
 >
 > 1. **Port mismatch.** The healthcheck probed `localhost:5000` while `.env.example`, `docker-compose.yml`, and the committed `Dockerfile` all use `3000`. The container would start, serve traffic correctly, fail every probe, and be marked permanently `unhealthy` — which in an orchestrated deployment means it is killed and restarted forever. The port is now `3000` throughout.
 > 2. **`COPY prisma ./prisma/` copies nothing.** There is no `prisma/` directory in this repository; the schema lives at `src/database/schema.prisma`. In Docker, `COPY` of a non-existent path is a **hard build failure**, so the image cannot be built at all. The copy now targets the real path, and because `prisma generate` reads the schema location from the `package.json` `"prisma"` key (§3.4), no `--schema` flag is needed.
 > 3. **`RUN npm run build --if-present` is dead weight.** This is a plain ES-module Node service with no transpilation step and no `build` script. The line is silently skipped, which is harmless but misleading — it implies a build artifact that downstream stages might expect to copy.
-> 4. **Dev dependencies ship to production.** `npm ci` installs Vitest, Supertest, ESLint, and Prettier into the runtime image. The builder stage needs them only if it runs tests; since it does not, the runtime `node_modules` should be pruned. Either run `npm ci --omit=dev` in a dedicated deps stage, or `npm prune --omit=dev` before the final `COPY --from=builder`.
+> 4. **Dev dependencies ship to production.** A single-stage `npm ci` installs Vitest, Supertest, ESLint, and Prettier into the runtime image. The block above resolves this with the dedicated `deps` stage (`npm ci --omit=dev`) rather than the alternative, `npm prune --omit=dev` in the builder: pruning and Prisma's generated client under `node_modules/.prisma` have a history of interacting badly, and generating *after* a prune is not an option because the prune removes the prisma CLI that generation needs. A clean production install has neither failure mode. Earlier revisions of this section named both routes but showed a two-stage block implementing neither, so the block contradicted this CAUTION — the block is now the authority and takes the deps-stage route.
 >
 > Migrations are **not** run from `CMD`. `prisma migrate deploy` executes as a separate pre-deploy step (a release command, init container, or CI job) so that N replicas starting simultaneously do not race the same migration, and a failed migration fails the deploy rather than crash-looping the service.
 
@@ -1851,6 +1884,8 @@ NODE_ENV=production
 PORT=3000
 LOG_LEVEL=info
 CORS_ORIGIN=https://edusphere.learn
+FRONTEND_URL=https://edusphere.learn
+SWAGGER_ENABLED=false
 
 # Database & Cache
 DATABASE_URL=postgresql://user:password@localhost:5432/edusphere_db?schema=public
@@ -1874,6 +1909,7 @@ CLOUDINARY_URL=
 EMAIL_PROVIDER=brevo
 EMAIL_API_KEY=
 EMAIL_FROM=no-reply@edusphere.learn
+EMAIL_FROM_NAME=EduSphere
 EMAIL_WEBHOOK_SECRET=
 
 # Test Environment (.env.test only)
@@ -1881,18 +1917,27 @@ DATABASE_URL_TEST=postgresql://user:password@localhost:5432/edusphere_test?schem
 REDIS_URL_TEST=redis://localhost:6379/1
 ```
 
+> [!NOTE]
+> **`CORS_ORIGIN` and `FRONTEND_URL` hold the same value in a single-origin deployment and are still two variables.** `CORS_ORIGIN` answers "which origins may call this API" and legitimately becomes a comma-separated list the moment a staging domain or a native client appears. `FRONTEND_URL` answers "what address do email links point at" and must resolve to exactly one. Collapsing them works until the first list value is added, at which point every verification and password-reset link in flight points at a concatenated string.
+
 > [!CAUTION]
 > **Four Files Currently Disagree About the Same Variables.** Configuration drift is silent: a service reads `process.env.REDIS_HOST`, gets `undefined`, falls back to a default, and connects to the wrong instance — or a validator throws at boot in staging only. The matrix above is the single source of truth, and every consumer must be reconciled to it:
 >
 > | Variable | Previous TRD | `.env.example` | `docker-compose.yml` | `ci.yml` | Resolution |
 > | :--- | :--- | :--- | :--- | :--- | :--- |
 > | Redis connection | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `REDIS_URL` | `REDIS_URL` | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | **`REDIS_URL`** — a single URL is what `ioredis` accepts natively and carries auth, TLS, and logical DB in one value |
-> | Access token TTL | `JWT_EXPIRES_IN` | `JWT_ACCESS_EXPIRES_IN` | — | — | **`JWT_ACCESS_EXPIRES_IN`** — unambiguous against its refresh counterpart |
-> | Refresh signing key | `JWT_REFRESH_SECRET` | *absent* | *absent* | — | **Required.** Distinct keys per token class (§7) |
+> | Access token TTL | `JWT_EXPIRES_IN` | `JWT_ACCESS_EXPIRES_IN` | — | `JWT_EXPIRES_IN` | **`JWT_ACCESS_EXPIRES_IN`** — unambiguous against its refresh counterpart |
+> | Refresh signing key | `JWT_REFRESH_SECRET` | *absent* | *absent* | `JWT_REFRESH_SECRET` | **Required.** Distinct keys per token class (§7) |
 > | Port | `5000` | `3000` | `3000` | `3000` | **`3000`** |
-> | Email config | `BREVO_API_KEY` / `EMAIL_SENDER` | `EMAIL_PROVIDER` / `EMAIL_API_KEY` / `EMAIL_FROM` | — | — | **Provider-neutral names** — hardcoding `BREVO_` defeats the `EMAIL_PROVIDER` switch |
+> | Email config | `BREVO_API_KEY` / `EMAIL_SENDER` | `EMAIL_PROVIDER` / `EMAIL_API_KEY` / `EMAIL_FROM` | — | `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` | **Provider-neutral names** — hardcoding `BREVO_` defeats the `EMAIL_PROVIDER` switch |
+> | Email sender name | *absent* | *absent* | — | `BREVO_SENDER_NAME` | **`EMAIL_FROM_NAME`** — Brevo and SendGrid both take the sender name as a field distinct from the address, so parsing it back out of an RFC 5322 display name packed into `EMAIL_FROM` is an avoidable failure point |
+> | Frontend link base | *absent* | *absent* | — | `FRONTEND_URL` | **`FRONTEND_URL`** — kept and promoted here. Verification and reset emails need a link base, and `CORS_ORIGIN` cannot serve as one (see the note above the table) |
+> | API docs exposure | *absent* | *absent* | — | `SWAGGER_ENABLED` | **`SWAGGER_ENABLED`**, default `false` — kept and promoted. Ungated, `/api-docs` publishes every route, schema, and example to the public internet |
+> | Test database / cache | *absent* | *absent* | — | *absent* | **`DATABASE_URL_TEST` / `REDIS_URL_TEST`** — §9.2 setup reads these exact names while CI supplies only `DATABASE_URL`, so an integration run in CI resolves `undefined` and either connects nowhere or silently targets the development database |
 >
-> Three additions have no prior definition anywhere and must be created: `JWT_REFRESH_SECRET`, `EMAIL_WEBHOOK_SECRET` (§6.11), and the `*_TEST` pair (§9.2).
+> Five variables have no prior definition in this document and must be created: `JWT_REFRESH_SECRET`, `EMAIL_WEBHOOK_SECRET` (§6.11), `EMAIL_FROM_NAME`, and the `*_TEST` pair (§9.2). Two more — `FRONTEND_URL` and `SWAGGER_ENABLED` — exist only in `ci.yml` today and are promoted to the matrix rather than deleted, because each answers a question nothing else in the matrix answers.
+>
+> **Reconciliation is bidirectional.** Earlier revisions of this CAUTION treated `.env.example` as the file needing correction and left the `ci.yml` column mostly blank, which is backwards: `.env.example` defines 12 of the 25 variables above and is missing thirteen, while `ci.yml` is the file carrying the wrong *names*. Both are consumers of this matrix and neither is a source.
 
 > [!IMPORTANT]
 > **Configuration Is Validated at Boot, Not at First Use.** `src/config/env.js` parses `process.env` through a Zod schema and calls `process.exit(1)` on failure, before the HTTP listener binds. A missing `JWT_REFRESH_SECRET` must kill the process at startup rather than surface as a 500 on the first token refresh hours into a deployment. Secrets are validated for presence and minimum length (≥ 32 characters for both JWT keys) — never merely for existence, since an empty string is a valid environment variable and an invalid signing key.

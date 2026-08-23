@@ -103,7 +103,7 @@ EduSphere implements dual-token JWT authentication with Redis-backed session sta
 3. **Session Revocation:** Each live refresh token is recorded at `session:<jti>`, and its `jti` is added to the per-user set `session:index:<userId>`. Logout unlinks one key; ban, password reset, and account deletion read the index set and unlink every session the user holds.
 
 > [!CAUTION]
-> **`DEL` Does Not Accept Glob Patterns.** Earlier revisions of this document specified `DEL session:<userId>:*` for ban and `DEL catalog:courses:*` for cache invalidation. Redis `DEL` takes **literal keys only** — those calls delete a key *named* `session:<userId>:*`, reply `0`, and revoke nothing, leaving a banned user's sessions live until natural expiry. Session revocation uses the index set (`SMEMBERS` → `UNLINK`); cache invalidation uses `SCAN` + `UNLINK`. `KEYS` is prohibited in request-path code. See TRD §7.1 for the full key namespace.
+> **`DEL` Does Not Accept Glob Patterns.** Earlier revisions of this document specified `DEL session:<userId>:*` for ban and `DEL cache:courses:*` for cache invalidation. Redis `DEL` takes **literal keys only** — those calls delete a key *named* `session:<userId>:*`, reply `0`, and revoke nothing, leaving a banned user's sessions live until natural expiry. Session revocation uses the index set (`SMEMBERS` → `UNLINK`); cache invalidation uses `SCAN` + `UNLINK`. `KEYS` is prohibited in request-path code. See TRD §7.1 for the full key namespace.
 
 > [!NOTE]
 > **Why the API is not "stateless."** Access-token *verification* is stateless, but authorization is not: `requireAuth` additionally rejects banned and soft-deleted accounts, and refresh depends on Redis session state. A Redis outage therefore degrades authentication — security-critical reads fail **closed** with `503`, cache reads fail **open** to PostgreSQL (TRD §7.1, §12).
@@ -953,11 +953,11 @@ Unpublish a violating course with a reason.
 * **Response `200 OK`:** Sets `isPublished = false`, decrements `subject.courseCount`, invalidates the public catalog cache, emails the instructor with the `reason` verbatim, and writes an `AuditLog` row with `actionType = COURSE_REJECTED` — the `AuditActionType` member that covers takedown (§4.4). There is no `COURSE_UNPUBLISHED` member; writing one raises a Prisma enum error inside the governance transaction and rolls the takedown back.
 
 > [!CAUTION]
-> **Catalog invalidation is `SCAN` + `UNLINK`, never `DEL catalog:courses:*`.** Earlier revisions of this document specified the latter. Redis `DEL` accepts **literal keys only** — a glob is treated as a key name that happens to contain `*`, so the command returns `0`, reports success, and deletes nothing. The catalog then serves the taken-down course from cache until the TTL lapses. The correct implementation iterates the keyspace non-blockingly:
+> **Catalog invalidation is `SCAN` + `UNLINK`, never `DEL cache:courses:*`.** Earlier revisions of this document specified the latter. Redis `DEL` accepts **literal keys only** — a glob is treated as a key name that happens to contain `*`, so the command returns `0`, reports success, and deletes nothing. The catalog then serves the taken-down course from cache until the TTL lapses. The correct implementation iterates the keyspace non-blockingly:
 > ```js
 > let cursor = '0';
 > do {
->   const [next, keys] = await redis.scan(cursor, 'MATCH', 'catalog:courses:*', 'COUNT', 100);
+>   const [next, keys] = await redis.scan(cursor, 'MATCH', 'cache:courses:*', 'COUNT', 100);
 >   cursor = next;
 >   if (keys.length) await redis.unlink(...keys);
 > } while (cursor !== '0');
