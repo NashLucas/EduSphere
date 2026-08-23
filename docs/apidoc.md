@@ -4,7 +4,7 @@
 * **API Version:** `v1` (Prefix: `/api/v1` — `GET /health` is deliberately outside the prefix)
 * **Transport:** HTTP/1.1. TLS is terminated at the load balancer in production; the Node process itself serves plain HTTP.
 * **TRD Alignment:** Synchronized with [EduTRD.md](../EduTRD.md) — the TRD is the **source of truth**. Where this document and the TRD disagree, the TRD governs and this file is the defect.
-* **Interactive OpenAPI Specs:** Served at `/api-docs` by `swagger-ui-express`, with the spec assembled by `swagger-jsdoc` from route annotations (TRD §3.3). The committed `swagger.json` is currently a stub covering `/health` only — and its health schema omits `database` and `redis`, so it does not yet match §8.1.
+* **Interactive OpenAPI Specs:** Served at `/api-docs` by `swagger-ui-express`, with the spec assembled by `swagger-jsdoc` from route annotations (TRD §3.3). The committed `swagger.json` remains a stub covering `/health` only, but that one contract now matches §8.1: `{ status, database, redis, uptime }` on `200`, the same shape on `503`, `security: []` because the endpoint is public, and a path-level server override because `/health` sits outside the `/api/v1` prefix.
 
 > [!IMPORTANT]
 > **Port is `3000`, not `5000`.** `.env.example`, `docker-compose.yml`, the `Dockerfile` `EXPOSE`/`HEALTHCHECK`, and TRD §10.2 all specify `3000`. Earlier revisions of this document used `5000` throughout, which made every example URL in it unusable.
