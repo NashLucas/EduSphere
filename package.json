@@ -6,16 +6,16 @@
   "main": "src/server.js",
   "prisma": {
     "schema": "src/database/schema.prisma",
-    "seed": "node src/database/seed.js"
+    "seed": "node --env-file-if-exists=.env src/database/seed.js"
   },
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
-    "db:seed": "node src/database/seed.js",
-    "db:reconcile": "node src/database/reconcile.js",
+    "db:seed": "node --env-file-if-exists=.env src/database/seed.js",
+    "db:reconcile": "node --env-file-if-exists=.env src/database/reconcile.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:run": "vitest run",
