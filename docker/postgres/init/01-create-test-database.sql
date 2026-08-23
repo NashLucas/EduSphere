@@ -1,0 +1,16 @@
+-- Creates the second database the test suite needs.
+--
+-- POSTGRES_DB provisions edusphere_db only, but Day 15.2's setup runs
+-- `prisma migrate deploy` against DATABASE_URL_TEST, and migrate deploy
+-- attaches to an existing database — it will not create one. Without this the
+-- first integration run fails on a database that was never provisioned, which
+-- reads as a Prisma or a test-harness problem rather than a missing CREATE.
+--
+-- Kept separate from the development database on purpose: the Day 15 setup
+-- truncates tables between suites, and TRD §9.2 requires an explicit failure
+-- when the *_TEST variables are absent rather than a fallback to DATABASE_URL
+-- that would point that truncation at a developer's own data.
+--
+-- Runs as POSTGRES_USER against POSTGRES_DB, and only on first initialization
+-- of the data directory (see the mount comment in docker-compose.yml).
+CREATE DATABASE edusphere_test;

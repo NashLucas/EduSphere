@@ -1,4 +1,14 @@
-version: '3.8'
+# Local development stack (task 1.3): PostgreSQL 15 and Redis 7, each with a
+# named volume and a health check, plus the API on 3000 — the same port as
+# `PORT` in .env.example and `EXPOSE` in the Dockerfile (TRD §10.1 defect 1).
+#
+# No `version:` key. It has been obsolete since Compose v2 and current releases
+# print a warning on every invocation telling you to remove it.
+#
+# Migrations are NOT run here. `prisma` is a devDependency and the runtime image
+# is built with `npm ci --omit=dev`, so the CLI does not exist inside the api
+# container — `npm run db:migrate` runs on the host against the published 5432,
+# which is why .env.example names the credentials this file provisions.
 
 services:
   api:
@@ -7,20 +17,57 @@ services:
       dockerfile: Dockerfile
     ports:
       - '3000:3000'
+    # src/config/env.js validates all 25 variables from TRD §10.2 and exits 1
+    # before the listener binds. The five inline values this service used to
+    # carry stopped being a working environment the moment that validator
+    # landed, so .env supplies the rest. Run `cp .env.example .env` first:
+    # Compose aborts with "env file .env not found" when it is missing, which
+    # is a clearer failure than twenty validation errors would be.
+    #
+    # Inside the container, --env-file-if-exists finds nothing — .env is
+    # excluded by .dockerignore and is not mounted — so these values are the
+    # only source and the two mechanisms do not compete.
+    env_file:
+      - .env
+    # Overrides only what must differ from the host's view. `environment:`
+    # takes precedence over `env_file:`, so these four win and every other
+    # variable passes through untouched.
     environment:
-      - NODE_ENV=development
-      - PORT=3000
-      - DATABASE_URL=postgresql://edusphere:secret@postgres:5432/edusphere_db?schema=public
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=local_development_secret_key
+      # The image sets ENV NODE_ENV=production. Pinned here so a stray
+      # NODE_ENV in .env cannot put the dev stack into production mode — or
+      # into `test`, which env.js answers by demanding the *_TEST pair.
+      NODE_ENV: development
+      # Pinned for the same reason the Dockerfile hardcodes 3000 in its
+      # HEALTHCHECK: a PORT that disagrees with the published mapping produces
+      # a container that serves traffic correctly, fails every probe, and is
+      # restarted forever.
+      PORT: 3000
+      # localhost inside this container is this container. Service names are
+      # the network addresses, and the credentials match the postgres service
+      # below.
+      DATABASE_URL: postgresql://edusphere:secret@postgres:5432/edusphere_db?schema=public
+      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # The image CMD is `node src/server.js` with no watcher, which left the
+    # bind mount below inert — host edits reached the container but not the
+    # running process. `node` stays PID 1, so the Dockerfile's reasoning about
+    # SIGTERM forwarding still holds; `npm run dev` would put npm there
+    # instead. Note that --watch depends on filesystem events crossing the
+    # bind mount, which is not reliable on every Docker Desktop backend; if
+    # edits do not take, `npm run dev` on the host against the published
+    # 5432/6379 is the more dependable loop.
+    command: ['node', '--watch', 'src/server.js']
+    # src only. The former ./uploads mount was vestigial: multer runs in memory
+    # storage for avatars alone and all large media uses pre-signed direct
+    # upload (TRD §5.4), so nothing writes to a local uploads path — and the
+    # image runs as `nodeapp` against root-owned files, so anything that tried
+    # would take EACCES rather than the silent success the mount implied.
     volumes:
       - ./src:/app/src
-      - ./uploads:/app/uploads
 
   postgres:
     image: postgres:15-alpine
@@ -32,6 +79,18 @@ services:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # POSTGRES_DB creates edusphere_db and nothing else, but Day 15.2 runs
+      # `prisma migrate deploy` against DATABASE_URL_TEST, and migrate deploy
+      # cannot create its own target. This mount creates the second database.
+      #
+      # Entrypoint scripts run ONLY when the data directory is empty, so an
+      # existing postgres_data volume will not pick this up: either
+      # `docker compose down -v` (destroys local data) or create it by hand
+      # with `docker compose exec postgres createdb -U edusphere edusphere_test`.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    # `service_started` is not enough: Postgres accepts TCP connections several
+    # seconds before it accepts queries, so the api would connect and fail its
+    # first statement.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U edusphere -d edusphere_db"]
       interval: 5s
@@ -42,6 +101,8 @@ services:
     image: redis:7-alpine
     ports:
       - '6379:6379'
+    # RDB snapshotting is on by default in the official image, so this volume
+    # survives a restart without extra configuration.
     volumes:
       - redis_data:/data
     healthcheck:
