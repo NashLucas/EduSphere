@@ -22,7 +22,7 @@
     "test:unit": "vitest run tests/unit src",
     "test:integration": "vitest run --dir tests/integration",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint src/ tests/",
+    "lint": "eslint .",
     "format": "prettier --write \"src/**/*.js\""
   },
   "dependencies": {
