@@ -42,11 +42,13 @@
 //
 // ── What is a placeholder here, and what is finished ─────────────────────────
 //
-// Task 2.1 owns the ORDER. Four slots below are marked TODO because the modules
-// that fill them are later tasks: the rate limiter (2.4), the pino options with
-// credential redaction (2.5), the /api/v1 router, and /health's real body (2.7).
-// Each slot is already in its correct position, so those tasks add a module and an
-// import — they must not move a line.
+// Task 2.1 owns the ORDER. Three slots below are still marked TODO because the
+// modules that fill them are later tasks: the pino options with credential
+// redaction (2.5), the /api/v1 router, and /health's real body (2.7). Each slot
+// is already in its correct position, so those tasks add a module and an import —
+// they must not move a line. Task 2.4 filled its slot exactly that way: the
+// global rate limiter now sits where its TODO stood, between cookie-parser and
+// the router, with the tiered limiters exported for their own routers.
 //
 // The 404 and error handlers are wired here because this task's middleware order
 // ends with them. Task 2.3 has landed, so they no longer hold inline envelopes:
@@ -70,6 +72,7 @@ import pinoHttp from 'pino-http';
 
 import { NotFoundError, normalizeError } from './utils/app-error.js';
 import { error as sendErrorEnvelope } from './utils/api-response.js';
+import { globalRateLimiter } from './middlewares/rate-limit.middleware.js';
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -128,10 +131,12 @@ app.use(express.json({ limit: '100kb' }));
 // See invariant 3.
 app.use(cookieParser());
 
-// TODO(2.4): app.use(globalRateLimiter) — 100 req/15 min keyed on req.ip, with
-// the auth (5/15 min) and admin-destructive (10/15 min) tiers applied at their
-// own routers. It belongs exactly here: after trust proxy so req.ip is the real
-// client, and after /health so the probe is not counted.
+// 100 req/15 min keyed on req.ip (task 2.4). It belongs exactly here: after
+// `trust proxy` so req.ip is the real client, and after /health so the probe is
+// never counted. The auth (5/15 min) and admin-destructive (10/15 min) tiers are
+// exported from the same module and applied at their own routers, which do not
+// exist yet — a limiter has to sit where its routes are.
+app.use(globalRateLimiter);
 
 // TODO: app.use('/api/v1', apiRouter) once the first router exists (2.x).
 
