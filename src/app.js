@@ -49,10 +49,10 @@
 // import — they must not move a line.
 //
 // The 404 and error handlers are wired here because this task's middleware order
-// ends with them, but they are deliberately minimal: task 2.3 replaces their
-// bodies with AppError and the ApiResponse builders. What they must already get
-// right is the envelope, because that is a published contract rather than an
-// implementation detail — see the note above globalErrorHandler.
+// ends with them. Task 2.3 has landed, so they no longer hold inline envelopes:
+// normalizeError maps any throw to a status and api-response.js builds the body,
+// leaving these two functions to decide only what gets logged and whether a stack
+// is allowed out. No module in this file writes an envelope literal.
 //
 // NO IMPORT OF src/config/env.js, matching src/database/index.js and
 // src/config/redis.js. That module calls process.exit(1) on a validation failure
@@ -67,6 +67,9 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
+
+import { NotFoundError, normalizeError } from './utils/app-error.js';
+import { error as sendErrorEnvelope } from './utils/api-response.js';
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -139,14 +142,15 @@ app.use(cookieParser());
  * matching, and the Express 4 idiom `app.get('*', …)` now throws at startup
  * ("Missing parameter name") because a bare `*` is no longer a valid pattern.
  *
- * TODO(2.3): throw AppError.notFound(...) and let the error handler format it, so
- * the envelope is built in one place.
+ * The path is interpolated, so it cannot be a system_messages constant — the
+ * method and URL are only known here. It is thrown rather than sent, so the one
+ * error envelope lives in globalErrorHandler: Express 5 catches a synchronous
+ * throw from a middleware and routes it there, a NotFoundError carries the 404,
+ * and the handler formats it exactly like every other miss. `throw` also keeps the
+ * signature to the one argument used, since this config warns on any unused param.
  */
-function notFoundHandler(req, res) {
-  res.status(404).json({
-    status: 'error',
-    message: `Cannot ${req.method} ${req.originalUrl}`,
-  });
+function notFoundHandler(req) {
+  throw NotFoundError(`Cannot ${req.method} ${req.originalUrl}`);
 }
 
 /**
@@ -162,34 +166,42 @@ function notFoundHandler(req, res) {
  * Delegating to Express's default handler is the only correct move there — it
  * destroys the socket instead.
  *
- * THE ENVELOPE IS THE PART THAT MATTERS TODAY. `status` is the string 'error',
- * never a boolean, and the payload key is `data` or `errors`, never a
- * resource-specific name (TRD §6). The scaffold this replaces emitted
- * `{ success: false, … }`, which no documented client can read. Task 2.3 moves
- * the construction into ApiResponse; the shape does not change when it does.
+ * The construction of the envelope lives in api-response.js, and the mapping of a
+ * raw throw to a status lives in normalizeError (task 2.3): this function only
+ * decides what to log and whether the stack is allowed out. That split is why a
+ * duplicate-key Prisma error answers 409 rather than 500 — `err.statusCode` is
+ * undefined on a Prisma error, so normalizeError, not `|| 500`, supplies the code.
  */
 function globalErrorHandler(err, req, res, next) {
   if (res.headersSent) {
     return next(err);
   }
 
-  const statusCode = err.statusCode || 500;
+  const { statusCode, message, errors, isOperational } = normalizeError(err);
 
-  // A 500 is a bug in this process and has to reach the operator; a 4xx is a
-  // client mistake the response already reports, and logging those at error level
-  // trains people to ignore the level.
-  if (statusCode >= 500) {
-    console.error('[app] unhandled error:', err);
+  // A 500 is a bug in this process and has to reach the operator with its real
+  // detail; a 4xx the client caused is already reported in the response. A
+  // non-operational error at any status is also a bug worth the operator's eyes —
+  // normalizeError sets that flag precisely for the Prisma/parse cases whose
+  // mapped status is a 4xx but whose cause is ours to see.
+  if (statusCode >= 500 || !isOperational) {
+    (req.log?.error ?? console.error).call(
+      req.log ?? console,
+      { err, statusCode },
+      '[app] request failed',
+    );
   }
 
-  res.status(statusCode).json({
-    status: 'error',
-    message: err.message || 'Internal Server Error',
-    // Stack traces name internal paths and dependency versions, so they are
-    // gated on development explicitly rather than on `NODE_ENV !== 'production'`
-    // — an unset NODE_ENV must not leak them.
-    ...(NODE_ENV === 'development' && { stack: err.stack }),
-  });
+  sendErrorEnvelope(
+    res,
+    statusCode,
+    message,
+    errors,
+    // Stack traces name internal paths and dependency versions, so they are gated
+    // on development explicitly rather than on `NODE_ENV !== 'production'` — an
+    // unset NODE_ENV must not leak them.
+    NODE_ENV === 'development' ? err.stack : undefined,
+  );
 }
 
 app.use(notFoundHandler);

@@ -58,6 +58,10 @@ export const MESSAGES = Object.freeze({
     FORBIDDEN: 'You do not have permission to perform this action',
     // authored — 409.
     CONFLICT: 'The request conflicts with the current state of the resource',
+    // authored — 400. apidoc §5's 400 row is "Invalid JSON formatting or missing
+    // mandatory request headers", which is a different failure from a 422: the
+    // body never parsed, so there are no per-field errors to report.
+    MALFORMED_JSON: 'Malformed JSON in request body',
     // authored — 413. apidoc §4 caps JSON bodies at 100kb.
     PAYLOAD_TOO_LARGE: 'Request body exceeds the maximum allowed size',
     // authored — 429 from a rate-limit tier. The response also carries
