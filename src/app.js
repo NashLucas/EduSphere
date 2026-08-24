@@ -42,13 +42,12 @@
 //
 // ── What is a placeholder here, and what is finished ─────────────────────────
 //
-// Task 2.1 owns the ORDER. Three slots below are still marked TODO because the
-// modules that fill them are later tasks: the pino options with credential
-// redaction (2.5), the /api/v1 router, and /health's real body (2.7). Each slot
-// is already in its correct position, so those tasks add a module and an import —
-// they must not move a line. Task 2.4 filled its slot exactly that way: the
-// global rate limiter now sits where its TODO stood, between cookie-parser and
-// the router, with the tiered limiters exported for their own routers.
+// Task 2.1 owns the ORDER. Two slots below are still marked TODO because the
+// modules that fill them are later tasks: the /api/v1 router, and /health's real
+// body (2.7). Each slot is already in its correct position, so those tasks add a
+// module and an import — they must not move a line. Tasks 2.4 and 2.5 filled
+// their slots exactly that way: the global rate limiter and the redacting request
+// logger now sit where their TODOs stood.
 //
 // The 404 and error handlers are wired here because this task's middleware order
 // ends with them. Task 2.3 has landed, so they no longer hold inline envelopes:
@@ -68,11 +67,11 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import pinoHttp from 'pino-http';
 
 import { NotFoundError, normalizeError } from './utils/app-error.js';
 import { error as sendErrorEnvelope } from './utils/api-response.js';
 import { globalRateLimiter } from './middlewares/rate-limit.middleware.js';
+import { httpLogger } from './middlewares/logging.middleware.js';
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -99,11 +98,13 @@ app.use(helmet());
 // while curl keeps working.
 app.use(cors({ origin: process.env.CORS_ORIGIN, credentials: true }));
 
-// TODO(2.5): replace with pinoHttp(loggerOptions) — request IDs, response-time
-// tracking, log-level by NODE_ENV, and redaction of req.body.password,
-// req.headers.authorization and req.headers.cookie. Until then this logs request
-// headers verbatim, Authorization included.
-app.use(pinoHttp());
+// Request logging (task 2.5). httpLogger attaches a per-request child logger at
+// req.log, generates a UUID request id echoed as X-Request-Id, and redacts the
+// credential-bearing fields — Authorization, Cookie, and the Set-Cookie on the
+// way out — that a bare pinoHttp() would write verbatim. High in the stack on
+// purpose: the rate limiter's 429s and the global error handler both log through
+// the req.log it installs.
+app.use(httpLogger);
 
 // See invariant 4: above the rate limiter, and above the body parsers it has no
 // use for.
