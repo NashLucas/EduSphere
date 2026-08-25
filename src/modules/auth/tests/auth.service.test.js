@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth service unit tests — plan:179 and plan:1032 ("service-layer unit tests
 // are written in the module's tests/ folder the same day the service lands").
-// Task 3.3 is the first service to land, so this is the first such file; task 3.4
-// adds the login() blocks below register()'s.
+// Task 3.3 is the first service to land, so this is the first such file; 3.4 adds
+// the login() blocks below register()'s, and 3.5 the refresh() blocks below those.
 //
 // These are UNIT tests: PostgreSQL and the Redis write are mocked, so the suite
 // runs with no Docker and no .env. That boundary is deliberate rather than
@@ -34,9 +34,15 @@
 // commit stays green. Both claims were also verified against live containers
 // with Redis stopped, and every assertion here was checked by mutating the
 // service until it failed.
+//
+// Two guards in refresh() survive mutation on purpose, and the code says so where
+// they are written: the `!token` check duplicates jwt.verify's own "jwt must be
+// provided", and the `typeof payload.jti` check duplicates keys.session()'s
+// rejection of a non-string. Both are explicitness, not behaviour, so no test here
+// can distinguish their presence — which is the honest reason there isn't one.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import jwt from 'jsonwebtoken';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -126,12 +132,20 @@ vi.mock('bcryptjs', async () => {
   };
 });
 
-// SADD is the only Redis command this module issues directly; everything else
-// goes through cache-keys.js, whose setWithTTL is mocked below. Importing the
-// real client would be harmless (lazyConnect opens no socket) but would leave
-// the index write unobservable.
+// SADD, GETDEL and SREM are the Redis commands this module issues directly;
+// everything else goes through cache-keys.js, whose setWithTTL is mocked below.
+// Importing the real client would be harmless (lazyConnect opens no socket) but
+// would leave the index write and the rotation gate unobservable.
+//
+// `getdel` defaults to null — an ABSENT session — so a refresh test that forgets
+// to arm a live session fails as an unauthenticated one rather than passing on a
+// mock's convenient truthiness.
 vi.mock('../../../config/redis.js', () => {
-  const client = { sadd: vi.fn(async () => 1) };
+  const client = {
+    sadd: vi.fn(async () => 1),
+    getdel: vi.fn(async () => null),
+    srem: vi.fn(async () => 1),
+  };
   return { redis: client, default: client };
 });
 
@@ -155,7 +169,8 @@ const { setWithTTL } = await import('../../../utils/cache-keys.js');
 const { sendVerificationEmail } =
   await import('../../../integrations/email/index.js');
 const { logger } = await import('../../../middlewares/logging.middleware.js');
-const { register, generateToken, login } = await import('../auth.service.js');
+const { register, generateToken, login, refresh, REFRESH_COOKIE } =
+  await import('../auth.service.js');
 
 const VALID = Object.freeze({
   fullName: 'Ada Lovelace',
@@ -184,6 +199,16 @@ beforeEach(() => {
     writeOrder.push(key);
     return 'OK';
   });
+  // Labelled, because SREM and SADD name the SAME key — an unlabelled push would
+  // make the index appear twice in writeOrder with no way to tell which was
+  // which. login() issues no SREM, so its writeOrder assertions are unaffected.
+  redis.srem.mockImplementation(async (key) => {
+    writeOrder.push(`SREM ${key}`);
+    return 1;
+  });
+  // Absent by default: a refresh test that forgets to arm a session fails as an
+  // unauthenticated one rather than passing on a mock's convenient truthiness.
+  redis.getdel.mockResolvedValue(null);
 });
 
 // ── generateToken ────────────────────────────────────────────────────────────
@@ -882,5 +907,756 @@ describe('login — the returned user', () => {
     await login({ ...CREDS });
 
     expect(findUnique.mock.calls[0][0].select.passwordHash).toBe(true);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// refresh() — task 3.5
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The one thing to know before reading these: `redis.getdel` is the whole
+// authorization gate, and its default is null. So "arming a session" means
+// telling the mock a value came back, and the rejection tests mostly need to arm
+// nothing at all.
+//
+// The record the mock returns is realistic but deliberately never trusted by the
+// service — which is itself asserted below, by arming a record whose `role`
+// disagrees with the database and checking which one reaches the token.
+
+/** ACCOUNT as ACCOUNT_FIELDS selects it: no passwordHash, refresh needs none. */
+const ACCOUNT_ROW = Object.freeze({
+  id: ACCOUNT.id,
+  fullName: ACCOUNT.fullName,
+  email: ACCOUNT.email,
+  role: ACCOUNT.role,
+  isEmailVerified: ACCOUNT.isEmailVerified,
+  isBanned: ACCOUNT.isBanned,
+  deletedAt: ACCOUNT.deletedAt,
+});
+
+const INDEX_KEY = `session:index:${ACCOUNT.id}`;
+
+/** A refresh token signed the way login() signs one. */
+function signRefresh({ sub = ACCOUNT.id, jti = randomUUID(), ...rest } = {}) {
+  return jwt.sign({ sub, type: 'refresh', ...rest }, REFRESH_SECRET, {
+    expiresIn: '7d',
+    jwtid: jti,
+  });
+}
+
+/**
+ * Arms a live session: a valid cookie, a value for GETDEL to return, and a row
+ * for the re-read. `record` overrides what Redis holds, `row` what Postgres does
+ * — the two are separate arguments precisely so a test can make them disagree.
+ */
+function givenSession({ record, row = ACCOUNT_ROW, jti = randomUUID() } = {}) {
+  const token = signRefresh({ sub: row.id, jti });
+  redis.getdel.mockResolvedValue(
+    JSON.stringify({
+      userId: row.id,
+      role: row.role,
+      issuedAt: '2026-08-01T00:00:00.000Z',
+      ip: '198.51.100.9',
+      userAgent: 'old-agent/1.0',
+      ...record,
+    }),
+  );
+  findUnique.mockResolvedValue(row);
+  return { token, jti };
+}
+
+// ── every rejection, and the fact that they are indistinguishable ────────────
+
+describe('refresh — a token it will not accept', () => {
+  it('answers 401 when the cookie is absent, touching neither store', async () => {
+    const err = await refresh(undefined).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.isOperational).toBe(true);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+    // The guard is before jwt.verify for a reason; nothing downstream ran.
+    expect(redis.getdel).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 for an empty-string cookie', async () => {
+    const err = await refresh('').catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 for a token signed with the WRONG key (plan:391)', async () => {
+    // The access secret. This is the property the two distinct keys exist for,
+    // and it fails on the signature before any claim is read.
+    const foreign = jwt.sign(
+      { sub: ACCOUNT.id, type: 'refresh' },
+      ACCESS_SECRET,
+      {
+        expiresIn: '7d',
+        jwtid: randomUUID(),
+      },
+    );
+
+    const err = await refresh(foreign).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 for a REAL access token from login() (plan:384)', async () => {
+    // End to end rather than hand-rolled: whatever login() actually mints must
+    // not be redeemable here, which is the deliverable in the plan's own words.
+    givenAccount();
+    const { accessToken } = await login({ ...CREDS });
+    vi.clearAllMocks();
+
+    const err = await refresh(accessToken).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 for an expired refresh token', async () => {
+    const stale = jwt.sign(
+      { sub: ACCOUNT.id, type: 'refresh' },
+      REFRESH_SECRET,
+      {
+        expiresIn: '-1s',
+        jwtid: randomUUID(),
+      },
+    );
+
+    const err = await refresh(stale).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+  });
+
+  it('answers 401 for a malformed token', async () => {
+    const err = await refresh('not-a-jwt').catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+  });
+
+  it('rejects HS512 signed with the right secret — the algorithms pin', async () => {
+    // Measured: without `algorithms: ['HS256']` on verify, jsonwebtoken trusts
+    // the header's `alg` and this token VERIFIES. The pin is what refuses it.
+    const substituted = jwt.sign(
+      { sub: ACCOUNT.id, type: 'refresh' },
+      REFRESH_SECRET,
+      { expiresIn: '7d', jwtid: randomUUID(), algorithm: 'HS512' },
+    );
+
+    const err = await refresh(substituted).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a correctly-signed token whose type is not refresh', async () => {
+    // Belt and braces behind the key separation: right key, wrong purpose.
+    const wrongType = jwt.sign(
+      { sub: ACCOUNT.id, type: 'access' },
+      REFRESH_SECRET,
+      { expiresIn: '7d', jwtid: randomUUID() },
+    );
+
+    const err = await refresh(wrongType).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a token carrying no jti at all', async () => {
+    // Verifies perfectly well and yields `jti === undefined` (measured), which
+    // is how "session:undefined" gets shared by every caller with the bug.
+    const noJti = jwt.sign(
+      { sub: ACCOUNT.id, type: 'refresh' },
+      REFRESH_SECRET,
+      {
+        expiresIn: '7d',
+      },
+    );
+
+    const err = await refresh(noJti).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string sub before it can reach Prisma', async () => {
+    // Not the same guard as the jti one: an object or a number here would be
+    // passed to findUnique as `where: { id: <that> }`, and Prisma's argument
+    // error would be caught by the re-read's catch and answered 503 — an outage
+    // report for a forged token, after the session had already been consumed.
+    const numericSub = jwt.sign({ sub: 7, type: 'refresh' }, REFRESH_SECRET, {
+      expiresIn: '7d',
+      jwtid: randomUUID(),
+    });
+
+    const err = await refresh(numericSub).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(redis.getdel).not.toHaveBeenCalled();
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects a jti that would forge another key shape, as a 401 not a 503', async () => {
+    // cache-keys.js:75's reason for rejecting ':' — a jti of `index:<userId>`
+    // makes session() emit exactly what sessionIndex() emits, so a GETDEL would
+    // delete the victim's whole session index. Reachable only by someone who can
+    // sign with the refresh key, but the classification still matters: keys.session()
+    // throws, and if that throw happened inside the Redis try/catch it would be
+    // logged as an outage and answered 503 — telling a forger to retry.
+    const forged = signRefresh({ jti: `index:${ACCOUNT.id}` });
+
+    const err = await refresh(forged).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+    expect(redis.getdel).not.toHaveBeenCalled();
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 when the session key is gone — expired, revoked or REPLAYED', async () => {
+    // GETDEL returning null covers all three at once, and the third is plan:390:
+    // the second use of one cookie finds nothing, because the first consumed it.
+    const { token } = givenSession();
+    redis.getdel.mockResolvedValue(null);
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+  });
+
+  it('gives every rejection a BYTE-IDENTICAL answer', async () => {
+    // The oracle property, and the reason SESSION_INVALID is one string. A
+    // client that can tell "expired" from "revoked" from "banned" can learn
+    // whether a stolen cookie was ever a real session, and whose.
+    const { token: banned } = givenSession({
+      row: { ...ACCOUNT_ROW, isBanned: true },
+    });
+    const cases = [
+      async () => refresh(undefined),
+      async () => refresh(''),
+      async () => refresh('not-a-jwt'),
+      async () => refresh(signRefresh({ jti: `index:${ACCOUNT.id}` })),
+      async () => refresh(banned),
+      async () => {
+        const { token } = givenSession();
+        redis.getdel.mockResolvedValue(null);
+        return refresh(token);
+      },
+    ];
+
+    const answers = [];
+    for (const attempt of cases) {
+      const err = await attempt().catch((e) => e);
+      answers.push(`${err.statusCode} ${err.message}`);
+    }
+
+    expect(new Set(answers).size).toBe(1);
+    expect(answers[0]).toBe(`401 ${MESSAGES.AUTH.SESSION_INVALID}`);
+  });
+
+  it('opens no session for any rejection', async () => {
+    for (const bad of ['', 'not-a-jwt', signRefresh({ jti: 'a:b' })]) {
+      await refresh(bad).catch(() => {});
+    }
+
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+});
+
+// ── the rotation gate (plan:346, plan:383, plan:390) ─────────────────────────
+
+describe('refresh — the rotation gate', () => {
+  it('consumes the session with a single GETDEL on the token jti', async () => {
+    // ONE command, not a GET followed by an UNLINK. Measured against
+    // redis:7-alpine: four concurrent refreshes on one cookie were all admitted
+    // in 200 of 200 trials under GET+UNLINK, and exactly one under GETDEL. A
+    // service that reached for redis.get() here would fail on this mock, which
+    // has no such method — that absence is deliberate.
+    const { token, jti } = givenSession();
+
+    await refresh(token);
+
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.getdel).toHaveBeenCalledWith(`session:${jti}`);
+  });
+
+  it('reads no account until the session is consumed', async () => {
+    // The gate, stated as an ordering: an unauthorized caller must not be able
+    // to make the service touch Postgres at all.
+    const { token } = givenSession();
+    redis.getdel.mockResolvedValue(null);
+
+    await refresh(token).catch(() => {});
+
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('answers 503, NOT 401, when Redis cannot be reached', async () => {
+    // Fail closed (TRD §7.1). A 401 here would tell a client holding a perfectly
+    // valid token to discard it because the cache was down.
+    const { token } = givenSession();
+    redis.getdel.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+    expect(redis.sadd).not.toHaveBeenCalled();
+  });
+
+  it('logs the cause of that 503, which the response cannot carry', async () => {
+    const { token } = givenSession();
+    const cause = new Error('ECONNREFUSED');
+    redis.getdel.mockRejectedValue(cause);
+
+    await refresh(token).catch(() => {});
+
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+    const [context] = logger.child().error.mock.calls[0];
+    expect(context.err).toBe(cause);
+    expect(context.userId).toBe(ACCOUNT.id);
+  });
+
+  it('answers 503 and mints nothing when the account re-read fails', async () => {
+    // Past the point of no return — the old session is already gone — so this
+    // is the one failure that costs the caller a login through no fault of
+    // theirs. Still a 503 rather than a 401: the token was valid.
+    const { token } = givenSession();
+    findUnique.mockRejectedValue(new Error('connection terminated'));
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+});
+
+// ── an account that stopped being eligible mid-session ───────────────────────
+
+describe('refresh — an account no longer eligible', () => {
+  it('answers 401 and NOT 403 for a banned account', async () => {
+    // The deliberate divergence from login(), which answers 403 for this exact
+    // account. There a correct password bought the honest answer; here it would
+    // be free, and apidoc §8.2 lists no 403 for this route. A 403 would make
+    // refresh the ban oracle login's pricing exists to prevent.
+    const { token } = givenSession({
+      row: { ...ACCOUNT_ROW, isBanned: true },
+    });
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+    expect(err.message).not.toBe(MESSAGES.AUTH.ACCOUNT_DISABLED);
+  });
+
+  it('answers the same 401 for a soft-deleted account', async () => {
+    const { token } = givenSession({
+      row: { ...ACCOUNT_ROW, deletedAt: new Date('2026-08-20T00:00:00.000Z') },
+    });
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe(MESSAGES.AUTH.SESSION_INVALID);
+  });
+
+  it('answers the same 401 when the row is gone entirely', async () => {
+    const { token } = givenSession();
+    findUnique.mockResolvedValue(null);
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(401);
+  });
+
+  it('does NOT restore the session it consumed — the ban ends it', async () => {
+    // The session key was destroyed by the GETDEL that let this request in. A
+    // service that wrote it back on the way out would hand a banned user another
+    // seven days.
+    const { token } = givenSession({
+      row: { ...ACCOUNT_ROW, isBanned: true },
+    });
+
+    await refresh(token).catch(() => {});
+
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+    expect(writeOrder).toEqual([]);
+  });
+
+  it('logs it, because a ban that survives to here means one path forgot', async () => {
+    // Day 13's ban unlinks every session key for the user, so reaching this
+    // branch at all is worth a line: it means a ban landed by some path that
+    // did not.
+    const { token } = givenSession({
+      row: { ...ACCOUNT_ROW, isBanned: true },
+    });
+
+    await refresh(token).catch(() => {});
+
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    expect(logger.child().warn.mock.calls[0][0].userId).toBe(ACCOUNT.id);
+  });
+});
+
+// ── the new pair, and where its claims come from ─────────────────────────────
+
+describe('refresh — the new token pair', () => {
+  it('returns the two tokens and NOTHING else (apidoc §8.2)', async () => {
+    // Not a `user`, unlike login's response. The endpoint's contract is the pair.
+    const { token } = givenSession();
+
+    const result = await refresh(token);
+
+    expect(Object.keys(result).sort()).toEqual(['accessToken', 'refreshToken']);
+  });
+
+  it('takes role from POSTGRES, not from the session record it just read', async () => {
+    // The reason refresh queries at all. The record's `role` is up to 7 days
+    // stale — nothing rewrites a live session on a role change — so an
+    // INSTRUCTOR demoted to STUDENT would otherwise keep minting access tokens
+    // carrying the role they no longer hold, 15 minutes at a time, for a week.
+    const { token } = givenSession({
+      record: { role: UserRole.INSTRUCTOR },
+      row: { ...ACCOUNT_ROW, role: UserRole.STUDENT },
+    });
+
+    const { accessToken } = await refresh(token);
+
+    expect(jwt.verify(accessToken, ACCESS_SECRET).role).toBe(UserRole.STUDENT);
+    // And the new session record carries the current role too, not the old one.
+    expect(setWithTTL.mock.calls[0][1].role).toBe(UserRole.STUDENT);
+  });
+
+  it('carries an email the session record could not have supplied', async () => {
+    // plan:356 fixes the record's shape at { userId, role, issuedAt, ip,
+    // userAgent } — no email — while plan:351 has requireAuth build
+    // `req.user = { id, email, role }` from the token with no round trip. Without
+    // the query, every refreshed token arrives at 3.10 missing a field.
+    const { token } = givenSession({
+      row: { ...ACCOUNT_ROW, email: 'ada.new@example.com' },
+    });
+
+    const { accessToken } = await refresh(token);
+    const claims = jwt.verify(accessToken, ACCESS_SECRET);
+
+    expect(claims.email).toBe('ada.new@example.com');
+    expect(claims.sub).toBe(ACCOUNT.id);
+    expect(claims.type).toBe('access');
+  });
+
+  it('ROTATES the refresh jti rather than reissuing the same one', async () => {
+    // A reissued jti is not a rotation: the old cookie would still name a live
+    // key, and plan:383's single-use property would be a comment.
+    const { token, jti } = givenSession();
+
+    const { refreshToken } = await refresh(token);
+
+    expect(jwt.decode(refreshToken).jti).not.toBe(jti);
+    expect(jwt.decode(refreshToken).jti).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('keeps the two classes on their own keys and their own jtis', async () => {
+    const { token } = givenSession();
+
+    const { accessToken, refreshToken } = await refresh(token);
+
+    expect(() => jwt.verify(refreshToken, ACCESS_SECRET)).toThrow(
+      /invalid signature/,
+    );
+    expect(() => jwt.verify(accessToken, REFRESH_SECRET)).toThrow(
+      /invalid signature/,
+    );
+    expect(jwt.decode(accessToken).jti).not.toBe(jwt.decode(refreshToken).jti);
+  });
+
+  it('signs both with HS256, the one algorithm verify accepts', async () => {
+    // The other half of the pin. Signing under an algorithm the service refuses
+    // to verify would mint tokens nothing can redeem.
+    const { token } = givenSession();
+
+    const { accessToken, refreshToken } = await refresh(token);
+
+    expect(jwt.decode(accessToken, { complete: true }).header.alg).toBe(
+      'HS256',
+    );
+    expect(jwt.decode(refreshToken, { complete: true }).header.alg).toBe(
+      'HS256',
+    );
+  });
+
+  it('gives the new refresh token a FULL 7 days — the session slides', async () => {
+    const { token } = givenSession();
+
+    const { accessToken, refreshToken } = await refresh(token);
+    const access = jwt.decode(accessToken);
+    const refreshed = jwt.decode(refreshToken);
+
+    expect(access.exp - access.iat).toBe(15 * 60);
+    expect(refreshed.exp - refreshed.iat).toBe(TTL.session);
+    expect(refreshed.exp - refreshed.iat).toBe(7 * 24 * 60 * 60);
+  });
+
+  it('keeps the new refresh payload as minimal as login keeps its own', async () => {
+    const { token } = givenSession();
+
+    const { refreshToken } = await refresh(token);
+
+    expect(Object.keys(jwt.decode(refreshToken)).sort()).toEqual([
+      'exp',
+      'iat',
+      'jti',
+      'sub',
+      'type',
+    ]);
+  });
+});
+
+// ── the new session records, and the order they are written in ───────────────
+
+describe('refresh — the new session records', () => {
+  it('keys the new session on the NEW refresh jti', async () => {
+    const { token } = givenSession();
+
+    const { refreshToken } = await refresh(token);
+
+    expect(setWithTTL.mock.calls[0][0]).toBe(
+      `session:${jwt.decode(refreshToken).jti}`,
+    );
+  });
+
+  it('INDEXES BEFORE it writes the session, then prunes LAST', async () => {
+    // Same ordering property login() has, for the same reason (plan:367): a
+    // session key the index does not list survives "revoke all sessions" for its
+    // full 7 days. The SREM comes last because it is the only write that can be
+    // lost without consequence — the index is specified as a superset, so a
+    // leftover jti is inert.
+    const { token, jti } = givenSession();
+
+    const { refreshToken } = await refresh(token);
+    const newJti = jwt.decode(refreshToken).jti;
+
+    expect(writeOrder).toEqual([
+      INDEX_KEY,
+      `session:${newJti}`,
+      `user:state:${ACCOUNT.id}`,
+      `SREM ${INDEX_KEY}`,
+    ]);
+    expect(redis.srem).toHaveBeenCalledWith(INDEX_KEY, jti);
+  });
+
+  it('writes plan:356 shape at TTL.session', async () => {
+    const { token } = givenSession();
+
+    await refresh(token, { ip: '203.0.113.7', userAgent: 'curl/8.5.0' });
+    const [, record, ttl] = setWithTTL.mock.calls[0];
+
+    expect(record).toEqual({
+      userId: ACCOUNT.id,
+      role: UserRole.STUDENT,
+      issuedAt: expect.any(String),
+      ip: '203.0.113.7',
+      userAgent: 'curl/8.5.0',
+    });
+    expect(new Date(record.issuedAt).toISOString()).toBe(record.issuedAt);
+    expect(ttl).toBe(TTL.session);
+  });
+
+  it('takes provenance from THIS request, not from the record it replaced', async () => {
+    // The new record should say where the session was last used. Copying the old
+    // ip and user-agent forward would make an audit trail that never moves.
+    const { token } = givenSession();
+
+    await refresh(token, { ip: '203.0.113.7', userAgent: 'curl/8.5.0' });
+    const [, record] = setWithTTL.mock.calls[0];
+
+    expect(record.ip).toBe('203.0.113.7');
+    expect(record.ip).not.toBe('198.51.100.9');
+    expect(record.userAgent).not.toBe('old-agent/1.0');
+  });
+
+  it('stores absent provenance as null, so the shape never varies', async () => {
+    const { token } = givenSession();
+
+    await refresh(token);
+    const [, record] = setWithTTL.mock.calls[0];
+
+    expect(record.ip).toBeNull();
+    expect(record.userAgent).toBeNull();
+    expect(Object.keys(record)).toContain('ip');
+  });
+
+  it('refreshes user:state at TTL.userState with REAL booleans', async () => {
+    const { token } = givenSession();
+
+    await refresh(token);
+    const [key, state, ttl] = setWithTTL.mock.calls[1];
+
+    expect(key).toBe(`user:state:${ACCOUNT.id}`);
+    expect(state).toEqual({
+      role: UserRole.STUDENT,
+      isBanned: false,
+      isEmailVerified: false,
+      deletedAt: null,
+    });
+    expect(state.isBanned).toBe(false);
+    expect(ttl).toBe(TTL.userState);
+  });
+
+  it('never fetches passwordHash — refresh compares no password', async () => {
+    // ACCOUNT_FIELDS rather than LOGIN_USER_FIELDS. Selecting the hash here
+    // would move a bcrypt digest into a function with no use for it.
+    const { token } = givenSession();
+
+    await refresh(token);
+    const { where, select } = findUnique.mock.calls[0][0];
+
+    expect(where).toEqual({ id: ACCOUNT.id });
+    expect(select.passwordHash).toBeUndefined();
+    expect(select.isBanned).toBe(true);
+    expect(select.email).toBe(true);
+  });
+});
+
+// ── the commit point ─────────────────────────────────────────────────────────
+
+describe('refresh — before and after the commit point', () => {
+  it('answers 503 with NO tokens when the index write fails', async () => {
+    const { token } = givenSession();
+    redis.sadd.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 with NO tokens when the session write fails', async () => {
+    // The commit point itself. Before it, failing closed costs a login; after
+    // it, failing would throw away a rotation Redis has already recorded.
+    const { token } = givenSession();
+    setWithTTL.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await refresh(token).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+  });
+
+  it('STANDS when the user:state write fails, and warns', async () => {
+    // Past the commit point. A missing user:state is a defined fallthrough to
+    // Postgres (cache-keys.js:316), so throwing here would strand a session that
+    // Redis has correctly recorded — the client would discard the only live
+    // refresh token it has.
+    const { token } = givenSession();
+    setWithTTL.mockImplementation(async (key) => {
+      writeOrder.push(key);
+      if (key.startsWith('user:state:')) throw new Error('ECONNREFUSED');
+      return 'OK';
+    });
+
+    const result = await refresh(token);
+
+    expect(result.accessToken).toBeTruthy();
+    expect(result.refreshToken).toBeTruthy();
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('STANDS when the stale index entry cannot be pruned, and warns', async () => {
+    // The least consequential write in the function: the index is a superset by
+    // specification (plan:367), the old session key is already gone, and SREM of
+    // a non-member returns 0 rather than erroring (measured).
+    const { token } = givenSession();
+    redis.srem.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const result = await refresh(token);
+
+    expect(result.refreshToken).toBeTruthy();
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('still returns a usable pair when BOTH best-effort writes fail', async () => {
+    const { token } = givenSession();
+    setWithTTL.mockImplementation(async (key) => {
+      if (key.startsWith('user:state:')) throw new Error('down');
+      return 'OK';
+    });
+    redis.srem.mockRejectedValue(new Error('down'));
+
+    const { accessToken, refreshToken } = await refresh(token);
+
+    expect(jwt.verify(accessToken, ACCESS_SECRET).sub).toBe(ACCOUNT.id);
+    expect(jwt.verify(refreshToken, REFRESH_SECRET).type).toBe('refresh');
+    expect(logger.child().warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── the cookie contract 3.6 and 3.9 both depend on ───────────────────────────
+
+describe('REFRESH_COOKIE', () => {
+  it('is apidoc:280 name plus plan:346 attributes', async () => {
+    expect(REFRESH_COOKIE.name).toBe('refreshToken');
+    expect(REFRESH_COOKIE.options.httpOnly).toBe(true);
+    expect(REFRESH_COOKIE.options.sameSite).toBe('strict');
+    // Narrower than '/', and the value 3.6's clearCookie must match exactly or
+    // the browser keeps the cookie it was told to drop.
+    expect(REFRESH_COOKIE.options.path).toBe('/api/v1/auth');
+  });
+
+  it('states maxAge in MILLISECONDS, matching the session TTL', async () => {
+    // res.cookie takes ms, Redis EXPIRE takes seconds. Without the x1000 this is
+    // a 7-second cookie, which no test of the service itself would ever notice.
+    expect(REFRESH_COOKIE.options.maxAge).toBe(TTL.session * 1000);
+    expect(REFRESH_COOKIE.options.maxAge).toBe(604800000);
+  });
+
+  it('is frozen, so no controller can edit the shared object', async () => {
+    expect(Object.isFrozen(REFRESH_COOKIE)).toBe(true);
+    expect(Object.isFrozen(REFRESH_COOKIE.options)).toBe(true);
+  });
+
+  it('waives Secure only for an EXPLICIT development NODE_ENV', async () => {
+    // The polarity is the point. This file's other NODE_ENV readers default an
+    // unset value to 'development'; doing that here would strip Secure off the
+    // refresh cookie on any production host that forgot to set the variable.
+    // Re-imported rather than asserted on a constant, because the value is fixed
+    // at module load and there is no other way to see both branches.
+    expect(process.env.NODE_ENV).toBe('test');
+    expect(REFRESH_COOKIE.options.secure).toBe(true);
+
+    const original = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = 'development';
+      vi.resetModules();
+      const dev = await import('../auth.service.js');
+      expect(dev.REFRESH_COOKIE.options.secure).toBe(false);
+
+      delete process.env.NODE_ENV;
+      vi.resetModules();
+      const unset = await import('../auth.service.js');
+      expect(unset.REFRESH_COOKIE.options.secure).toBe(true);
+
+      process.env.NODE_ENV = 'production';
+      vi.resetModules();
+      const prod = await import('../auth.service.js');
+      expect(prod.REFRESH_COOKIE.options.secure).toBe(true);
+    } finally {
+      process.env.NODE_ENV = original;
+      vi.resetModules();
+    }
   });
 });

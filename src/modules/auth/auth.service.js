@@ -248,6 +248,150 @@
 // not one access-token TTL", plan:388). Neither coupling is enforced here — that
 // would mean re-implementing the `ms` duration grammar jsonwebtoken already owns —
 // so it is documented instead, and the defaults below match the TTLs exactly.
+//
+// ═════════════════════════════════════════════════════════════════════════════
+// refresh() — task 3.5
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ── GETDEL IS WHAT MAKES A REFRESH TOKEN SINGLE-USE ──────────────────────────
+//
+// plan:346 orders it "confirm session:<jti> exists in Redis → rotate: UNLINK the
+// old key, ...", which reads as GET followed by UNLINK. Written that way the
+// rotation is not single-use, and the gap is not theoretical: measured against
+// redis:7-alpine over 200 trials, four concurrent refreshes carrying ONE cookie
+// were ALL admitted in 200 of 200 trials — every trial, not an unlucky few,
+// because ioredis dispatches the four GETs before the first UNLINK lands. Four
+// sessions from one token, and plan:390's "replay the OLD refresh token → expect
+// 401" passes only because a sequential replay happens to lose the race.
+//
+// `GETDEL session:<jti>` collapses the check and the consumption into one command,
+// so the request that ATOMICALLY REMOVED THE KEY is the one authorized to rotate.
+// Same probe, same 200 trials: exactly one winner every time, min 1 max 1. That is
+// the property the endpoint needs, and it is the same reasoning
+// src/utils/cache-keys.js:41 already records for the verify and reset tokens —
+// "two concurrent requests carrying the same token both pass a GET-then-UNLINK
+// check. Redis 6.2+ has GETDEL for exactly this."
+//
+// Measured available: redis_version 7.4.9, and ioredis 5.11.1 exposes .getdel.
+// GETDEL on an absent key returns null, which is the 401 below rather than an
+// error. GETDEL against a key holding a Set throws WRONGTYPE and leaves the Set
+// intact — unreachable here, because cache-keys' SEGMENT rule rejects the ':' a
+// crafted jti would need to name the index key (cache-keys.js:75).
+//
+// ── EVERY REJECTION IS THE SAME 401, AND THE LIST IS LONGER THAN apidoc's ────
+//
+// apidoc §8.2 gives refresh exactly two failure codes, 401 and 503, and describes
+// the 401 as "Cookie absent, expired, or its session:<jti> key no longer exists in
+// Redis (revoked)". SEVEN throw sites below answer with that one code and
+// MESSAGES.AUTH.SESSION_INVALID:
+//
+//   1. no cookie at all
+//   2. a token that does not verify — bad signature, expired, malformed, or a
+//      substituted algorithm
+//   3. a `type` claim that is not 'refresh'
+//   4. claims that cannot be used — no jti, or a non-string sub
+//   5. a jti that would forge a different key shape
+//   6. a session key that is gone — consumed, revoked, or expired
+//   7. an account banned or soft-deleted since login
+//
+// The jwt failures were measured rather than guessed, so the catch covers real
+// classes: the wrong key gives JsonWebTokenError "invalid signature", an absent or
+// empty token "jwt must be provided", junk "jwt malformed", and a lapsed token
+// TokenExpiredError "jwt expired". An ACCESS token presented here fails on
+// "invalid signature" before its `type` claim is ever read, which is plan:391's
+// deliverable and a property of the two keys rather than of the claim.
+//
+// THE BANNED ACCOUNT IS THE ONE THAT DEVIATES, and deliberately. login() answers
+// 403 ACCOUNT_DISABLED for the same account, because a correct password buys an
+// honest answer. Here the 403 would be free: apidoc lists no 403 for this
+// endpoint, and answering one would make refresh the ban oracle that login's
+// pricing exists to prevent. So it is the 401, the caller re-authenticates, and
+// login is where they learn the truth. Day 13's ban already unlinks every session
+// key for the user, so this check is defence in depth for a ban that lands by some
+// path that forgets to.
+//
+// ── WHY REFRESH READS POSTGRES WHEN THE SESSION RECORD IS RIGHT THERE ─────────
+//
+// plan:346 names no database read, and the session record GETDEL just returned
+// carries `userId` and `role`. It is still not enough, for two independent
+// reasons.
+//
+// The access token has to carry `email`, because plan:351 has requireAuth build
+// `req.user = { id, email, role }` from the token with no round trip. plan:356
+// fixes the session record's shape at { userId, role, issuedAt, ip, userAgent } —
+// no email — so a refresh-minted token without a query would arrive at 3.10
+// missing a field that every request downstream expects. (An earlier revision of
+// login()'s header claimed 3.5 "re-reads both from the session record". That was
+// wrong about `email` and is corrected below.)
+//
+// And `role` in that record is up to 7 days stale. plan:376 writes user:state on
+// role change but nothing rewrites a live session, so a demoted INSTRUCTOR would
+// keep minting access tokens carrying the role they no longer hold, 15 minutes at
+// a time, for the remaining life of the session. Re-reading is what bounds a
+// demotion by one access-token lifetime instead of by seven days.
+//
+// The row is read with ACCOUNT_FIELDS, so `passwordHash` is never fetched at all —
+// refresh compares no password, and the one place this module must select that
+// column stays login().
+//
+// ── THE COMMIT POINT, AND WHY TWO WRITES ARE BEST-EFFORT ─────────────────────
+//
+// GETDEL destroys the old session before the new one exists, so this function has
+// a window where the caller holds nothing. That direction is forced: writing the
+// new session first and deleting the old afterwards means a failed delete leaves
+// the OLD refresh token live, which is precisely the replay plan:383 and plan:390
+// forbid. A user sent back to the login form is recoverable; a replayable refresh
+// token is not.
+//
+// So the sequence has a commit point, and it is the `session:<newJti>` write:
+//
+//   SADD index newJti      -- fatal (503, no tokens). Index before session, for
+//                             the reason login()'s header gives: never a session
+//                             the index does not list.
+//   SET session:<newJti>   -- fatal (503, no tokens). THE COMMIT POINT.
+//   SET user:state         -- best-effort. Logged, rotation stands.
+//   SREM index oldJti      -- best-effort. Logged, rotation stands.
+//
+// Before the commit point a failure means no tokens are returned and the caller
+// re-authenticates. After it the rotation has HAPPENED, and throwing would be a
+// lie: the client would discard a refresh token that is already the only live one,
+// stranding a session that Redis has correctly recorded. Both post-commit writes
+// are also harmless to lose. A missing user:state is a defined fallthrough to
+// PostgreSQL (cache-keys.js:316), and a stale index member is inert by
+// specification — plan:367 states it outright, and SREM of a non-member was
+// measured to return 0 rather than error, so the next rotation's cleanup is a
+// no-op either way.
+//
+// That makes user:state FATAL in login() and BEST-EFFORT here. The asymmetry is
+// the point rather than an oversight: a failed login has destroyed nothing and
+// costs a retry, while a failed refresh at that stage would throw away work Redis
+// has already committed.
+//
+// ── A SLIDING SESSION, WITH NO ABSOLUTE CAP ──────────────────────────────────
+//
+// "Mint a new pair" (plan:346) means a full 7 days each time, so a client that
+// refreshes every 14 minutes holds a session indefinitely and TTL.session is a
+// 7-day idle timeout rather than a lifetime. Nothing in TRD §7 or apidoc §8.2
+// specifies an absolute cap, so none is invented here; the honest note is that
+// revocation is what ends a session, and `session:index:<userId>` (plan:373) is
+// what makes that possible in one operation.
+//
+// ── WHAT refresh() DELIBERATELY LEAVES TO TASK 3.9 ───────────────────────────
+//
+// plan:346 also says "Set the cookie HttpOnly; Secure; SameSite=Strict;
+// Path=/api/v1/auth" and "Reject on Origin/Referer mismatch". Neither is
+// implemented here, because neither can be: this service has no `req` and no
+// `res` (plan:1021), and both are properties of the HTTP exchange rather than of
+// the rotation. They are task 3.9's, and they are load-bearing enough to name as
+// obligations rather than leave implied:
+//
+//   1. The cookie attributes are exported below as REFRESH_COOKIE so that 3.9 and
+//      3.6 cannot spell them differently — 3.6 must CLEAR the cookie with the same
+//      Path it was set with (plan:347) or the browser keeps the old one.
+//   2. The Origin/Referer match against CORS_ORIGIN is REQUIRED, and on
+//      /auth/logout too, not only here: TRD:1673 makes those two "the sole
+//      cookie-reading routes" and the match is the CSRF defence that SameSite is
+//      only the first half of. Nothing in this file can enforce that it happens.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -476,17 +620,51 @@ const DECOY_HASH =
   '$2a$12$FnfXIrAF1z2Qx2HtyRFNQuSUPsQo1lniV4DhiWoovJEy9FfYcNmjK';
 
 /**
- * What login reads: the public shape plus the three columns it decides on.
+ * The single algorithm either key is ever accepted under.
+ *
+ * Pinned on every verify, and measured to be load-bearing. Without it, a token
+ * whose header says HS512 and whose signature is a correct HS512 MAC over the
+ * same secret VERIFIES — jsonwebtoken trusts the header's `alg` when given no
+ * list. With it the same token is refused as "invalid algorithm".
+ *
+ * Not, as the usual telling has it, a defence against `alg:none`: jsonwebtoken 9
+ * refuses an unsigned token unaided, with or without this list (also measured).
+ * The real exposure is algorithm substitution, and the pin closes it by leaving
+ * exactly one algorithm the header is allowed to name.
+ *
+ * Stated on the sign calls too, where it is already jsonwebtoken's default. That
+ * is the point: a reader should not have to know the library's default to see
+ * that what this module signs and what it accepts are the same one algorithm.
+ */
+const JWT_ALGORITHM = 'HS256';
+
+/**
+ * The account columns that decide whether a caller may hold a session at all —
+ * the public shape plus the two denial flags.
+ *
+ * Split out of LOGIN_USER_FIELDS in task 3.5 because refresh() needs exactly
+ * this and must NOT fetch `passwordHash`: it compares no password, so selecting
+ * the column would move a bcrypt digest into a place with no use for it. Keeping
+ * login()'s one legitimate need as the extension below, rather than making the
+ * hash the shared default, is what confines it to the single function that
+ * compares it.
+ */
+const ACCOUNT_FIELDS = Object.freeze({
+  ...PUBLIC_USER_FIELDS,
+  isBanned: true,
+  deletedAt: true,
+});
+
+/**
+ * What login reads: the account shape plus the one column only login needs.
  *
  * `passwordHash` has to be selected here — a comparison needs it — which is the
  * one place this module breaks the never-fetch-it rule PUBLIC_USER_FIELDS exists
  * to enforce. toPublicUser() below is what keeps it from travelling any further.
  */
 const LOGIN_USER_FIELDS = Object.freeze({
-  ...PUBLIC_USER_FIELDS,
+  ...ACCOUNT_FIELDS,
   passwordHash: true,
-  isBanned: true,
-  deletedAt: true,
 });
 
 /**
@@ -530,7 +708,7 @@ function jwtConfig() {
 
   if (!accessSecret || !refreshSecret) {
     throw new Error(
-      'auth.login: both JWT_SECRET and JWT_REFRESH_SECRET must be set — ' +
+      'auth: both JWT_SECRET and JWT_REFRESH_SECRET must be set — ' +
         'refusing to sign a token with an absent or default key',
     );
   }
@@ -539,7 +717,7 @@ function jwtConfig() {
   // module's import graph and cannot be assumed to have run. See the header.
   if (accessSecret === refreshSecret) {
     throw new Error(
-      'auth.login: JWT_SECRET and JWT_REFRESH_SECRET are identical — a refresh ' +
+      'auth: JWT_SECRET and JWT_REFRESH_SECRET are identical — a refresh ' +
         'token would then verify as an access token (TRD §7)',
     );
   }
@@ -630,7 +808,7 @@ export async function login({ email, password }, { ip, userAgent } = {}) {
       type: TOKEN_TYPE.ACCESS,
     },
     accessSecret,
-    { expiresIn: accessTtl, jwtid: randomUUID() },
+    { expiresIn: accessTtl, jwtid: randomUUID(), algorithm: JWT_ALGORITHM },
   );
 
   // A uuid, not base64: cache-keys.js validates every segment against
@@ -639,12 +817,15 @@ export async function login({ email, password }, { ip, userAgent } = {}) {
   // make session() emit what sessionIndex() emits.
   const refreshJti = randomUUID();
 
-  // Deliberately minimal. `role` and `email` would be 7 days stale by the time
-  // this token is redeemed, and 3.5 re-reads both from the session record.
+  // Deliberately minimal: `sub`, `type` and the jti, and nothing else. `role`
+  // would be up to 7 days stale by the time this token is redeemed and `email`
+  // is not the token's to carry, so refresh() re-reads BOTH FROM POSTGRES rather
+  // than trusting either — see refresh()'s section of the header for why the
+  // session record cannot answer it either.
   const refreshToken = jwt.sign(
     { sub: row.id, type: TOKEN_TYPE.REFRESH },
     refreshSecret,
-    { expiresIn: refreshTtl, jwtid: refreshJti },
+    { expiresIn: refreshTtl, jwtid: refreshJti, algorithm: JWT_ALGORITHM },
   );
 
   try {
@@ -698,4 +879,292 @@ export async function login({ email, password }, { ip, userAgent } = {}) {
   };
 }
 
-export default { register, generateToken, login };
+/**
+ * The refresh cookie's name and attributes — plan:346, apidoc:280, TRD:1669.
+ *
+ * Exported from the service rather than owned by the controller because THREE
+ * tasks have to spell it identically and only one of them sets it: 3.9 sets it on
+ * login and refresh, and 3.6 CLEARS it on logout. res.clearCookie only clears a
+ * cookie whose name, Path and Domain match what was set (a Set-Cookie for
+ * `/api/v1/auth` and a clear for `/` leave the browser holding the original), so
+ * a second spelling is a logout that silently does not log out.
+ *
+ * Not in config/constants.js, which would otherwise be its home: `maxAge` is
+ * derived from TTL.session, constants.js imports nothing at all, and pulling
+ * cache-keys.js in there would drag redis.js into the import graph of every
+ * middleware that reads a constant.
+ *
+ * Attribute by attribute:
+ *
+ *   httpOnly  TRD:1669 — no script may read it. The whole reason the refresh
+ *             token is a cookie while the access token is not.
+ *   secure    HTTPS only, waived ONLY when NODE_ENV is explicitly 'development'.
+ *             Note the polarity: this file's other NODE_ENV readers default an
+ *             unset value to 'development' (redis.js:67, logging.middleware.js:107
+ *             do the same), and doing that here would strip Secure off the cookie
+ *             on any production host that forgot to set the variable. So it is
+ *             read raw, and the permissive branch requires an explicit opt-in —
+ *             app.js:356 gates its stack traces on exactly that principle, in the
+ *             direction that principle happens to point there.
+ *   sameSite  'strict' (plan:346). The browser sends this on no cross-site
+ *             request at all — the first half of the CSRF defence, whose second
+ *             half is 3.9's Origin/Referer check.
+ *   path      '/api/v1/auth' — narrower than '/', so the cookie is not attached
+ *             to the ~90 endpoints that have no use for it. TRD:1673 makes
+ *             /auth/refresh and /auth/logout "the sole cookie-reading routes".
+ *   maxAge    TTL.session, in MILLISECONDS. express's res.cookie takes ms while
+ *             Redis EXPIRE takes seconds, so the ×1000 is required and its
+ *             absence would be a 7-second cookie. Matching the key's TTL is what
+ *             stops the browser from holding a cookie whose session Redis has
+ *             already dropped.
+ */
+export const REFRESH_COOKIE = Object.freeze({
+  name: 'refreshToken',
+  options: Object.freeze({
+    httpOnly: true,
+    secure: process.env.NODE_ENV !== 'development',
+    sameSite: 'strict',
+    path: '/api/v1/auth',
+    maxAge: TTL.session * 1000,
+  }),
+});
+
+/**
+ * Rotates a refresh token: consumes the old session and opens a new one —
+ * plan:346, apidoc §8.2.
+ *
+ * Single-use by construction. The old `session:<jti>` is removed with GETDEL, so
+ * the request that atomically won the key is the only one authorized to rotate;
+ * a replay of the same cookie finds nothing and gets the 401 (plan:390). See
+ * refresh()'s section of the header for the measured race this closes and for the
+ * commit point that makes the last two writes best-effort.
+ *
+ * Takes the raw token rather than a cookie jar or a `req`: the service reads no
+ * HTTP. The controller (3.9) passes `req.cookies[REFRESH_COOKIE.name]`, which is
+ * undefined when the cookie is absent — a case handled here rather than left to
+ * jwt.verify's "jwt must be provided", so an absent cookie and a forged one are
+ * indistinguishable to the caller.
+ *
+ * @param {string} [token] The refresh token from the cookie. Absent, empty and
+ *        malformed all answer the same 401.
+ * @param {{ip?: string, userAgent?: string}} [context]
+ *        Provenance for the NEW session record, from this request rather than
+ *        copied from the old one — the record then says where the session was
+ *        last used, which is the more useful of the two for an audit.
+ * @returns {Promise<{accessToken: string, refreshToken: string}>} a new pair. No
+ *          `user`: apidoc §8.2's refresh response carries only the two tokens.
+ *          The refresh token is the controller's to re-set with REFRESH_COOKIE.
+ * @throws {AppError} 401 for every rejection — absent, malformed, badly signed,
+ *         expired, wrong `type`, unusable jti, already-consumed or revoked
+ *         session, and an account banned or soft-deleted since login; 503 when
+ *         Redis or PostgreSQL cannot be reached, or when the new session cannot
+ *         be recorded, in which case no tokens are issued
+ */
+export async function refresh(token, { ip, userAgent } = {}) {
+  const { accessSecret, refreshSecret, accessTtl, refreshTtl } = jwtConfig();
+
+  // Before jwt.verify, so `undefined` never reaches it. Its own error for that
+  // input is "jwt must be provided", which would land in the same catch below
+  // anyway — this is here to make the absent-cookie case explicit rather than
+  // incidental.
+  if (!token) {
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  let payload;
+  try {
+    // The refresh key, so an ACCESS token presented here fails on the signature
+    // before its `type` claim is ever read (plan:391). Measured: it throws
+    // JsonWebTokenError "invalid signature".
+    payload = jwt.verify(token, refreshSecret, {
+      algorithms: [JWT_ALGORITHM],
+    });
+  } catch {
+    // Every verify failure collapses to one answer: bad signature, expired,
+    // malformed, alg substitution. Not logged at error level — a stale cookie
+    // after a week away is the ordinary case, and logging it as an error would
+    // make the security log unreadable by the time it mattered.
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  // Belt and braces behind the key separation: a token signed with the refresh
+  // key but minted for another purpose is refused before it can open a session.
+  if (payload.type !== TOKEN_TYPE.REFRESH) {
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  // `sub` is the load-bearing half: it becomes the `where` of the query below, and
+  // a non-string reaches Prisma as an invalid argument that would be reported as a
+  // 503 outage. The `jti` half is belt and braces — keys.session() rejects a
+  // non-string itself, one guard below — kept because a token signed without
+  // `jwtid` yields `jti === undefined` (measured) and reading that intent out of a
+  // TypeError from a key builder is worse than stating it here.
+  if (typeof payload.jti !== 'string' || typeof payload.sub !== 'string') {
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  const oldJti = payload.jti;
+  const userId = payload.sub;
+
+  // Built here, in its own guard, rather than inside the try below. keys.session()
+  // REJECTS a jti outside /^[A-Za-z0-9._-]+$/ by throwing (cache-keys.js:75) — the
+  // guard that stops a crafted `index:<victimId>` from making session() emit what
+  // sessionIndex() emits. Reached only by someone who can sign with the refresh
+  // key, and the honest answer for that is this endpoint's one 401, not the 503
+  // the catch below would otherwise log as a Redis outage. Calling the real key
+  // builder is also what keeps this check from drifting from the rule it enforces.
+  let sessionKey;
+  try {
+    sessionKey = keys.session(oldJti);
+  } catch {
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  // ── The authorization gate. One command, and it both checks and consumes ────
+  // Only the presence of a value is read; the record itself is discarded, because
+  // nothing in it can be trusted for the token about to be minted (see below).
+  let stored;
+  try {
+    stored = await redis.getdel(sessionKey);
+  } catch (err) {
+    // Fail CLOSED (TRD §7.1). A session lookup that cannot be performed is not a
+    // session that exists, and answering 401 here would tell a client with a
+    // perfectly good token to throw it away over an outage — so 503, which says
+    // "retry" and leaves the session intact.
+    log.error(
+      { err, userId },
+      '[auth] refresh: session read failed — refusing to rotate',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // null means the key was absent: expired at 7 days, revoked by a logout or a
+  // ban, or already consumed by an earlier refresh. Including this request's own
+  // replay, which is the point.
+  if (stored === null) {
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  // The old session is now GONE, and everything below either completes the
+  // rotation or leaves the caller re-authenticating. Deliberate: the alternative
+  // ordering leaves a replayable token behind on failure. Header has the reasoning.
+
+  // Re-read rather than trusting the record just consumed. `email` is not in it
+  // and `role` in it is up to 7 days stale, and this is also where a ban that
+  // landed mid-session is caught. ACCOUNT_FIELDS, so no passwordHash.
+  let row;
+  try {
+    row = await prisma.user.findUnique({
+      where: { id: userId },
+      select: ACCOUNT_FIELDS,
+    });
+  } catch (err) {
+    log.error(
+      { err, userId },
+      '[auth] refresh: account re-read failed — session already consumed',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // A deleted row, a ban, or a soft delete. 401 and not 403, unlike login(): see
+  // the header — a 403 here would make refresh the ban oracle that login's 403
+  // charges a correct password for, and apidoc §8.2 lists no 403 for this route.
+  if (!row || row.isBanned || row.deletedAt !== null) {
+    log.warn(
+      { userId, found: Boolean(row) },
+      '[auth] refresh: account no longer eligible — session consumed, not renewed',
+    );
+    throw UnauthorizedError(MESSAGES.AUTH.SESSION_INVALID);
+  }
+
+  // Same claims login() signs, from the row just read, so a role change takes
+  // effect within one access-token lifetime instead of at the end of the session.
+  const accessToken = jwt.sign(
+    {
+      sub: row.id,
+      email: row.email,
+      role: row.role,
+      type: TOKEN_TYPE.ACCESS,
+    },
+    accessSecret,
+    { expiresIn: accessTtl, jwtid: randomUUID(), algorithm: JWT_ALGORITHM },
+  );
+
+  const newJti = randomUUID();
+
+  const refreshToken = jwt.sign(
+    { sub: row.id, type: TOKEN_TYPE.REFRESH },
+    refreshSecret,
+    { expiresIn: refreshTtl, jwtid: newJti, algorithm: JWT_ALGORITHM },
+  );
+
+  // A fresh 7 days, which makes TTL.session an idle timeout rather than a session
+  // lifetime — see the header. Nothing in apidoc or the TRD specifies a cap.
+  try {
+    // Index before session, as login() does: the index must never be missing a
+    // jti whose session key is live, or "revoke all sessions" leaves that one
+    // alive for 7 days (plan:367).
+    await redis.sadd(keys.sessionIndex(row.id), newJti);
+
+    await setWithTTL(
+      keys.session(newJti),
+      {
+        userId: row.id,
+        role: row.role,
+        issuedAt: new Date().toISOString(),
+        ip: ip ?? null,
+        userAgent: userAgent ?? null,
+      },
+      TTL.session,
+    );
+  } catch (err) {
+    log.error(
+      { err, userId: row.id },
+      '[auth] refresh: new session write failed — no tokens issued, old session already consumed',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // ── Past the commit point. Both writes below are best-effort ────────────────
+
+  // Refreshed here even though plan:376 lists only login and role/ban changes as
+  // writers, because refresh is a 15-minute heartbeat on an active session and
+  // this is the record 3.10 reads on every request. A failure is not fatal: a
+  // miss falls through to PostgreSQL by design (cache-keys.js:316).
+  try {
+    await setWithTTL(
+      keys.userState(row.id),
+      {
+        role: row.role,
+        isBanned: row.isBanned,
+        isEmailVerified: row.isEmailVerified,
+        deletedAt: row.deletedAt,
+      },
+      TTL.userState,
+    );
+  } catch (err) {
+    log.warn(
+      { err, userId: row.id },
+      '[auth] refresh: user:state write failed — rotation stands, next read falls through to Postgres',
+    );
+  }
+
+  // Housekeeping, last and least. The index is specified as a superset
+  // (plan:367), so a leftover jti is inert — its session key is already gone, and
+  // a revocation that unlinks it is a no-op (SREM of a non-member returns 0, no
+  // error, measured). Left until after the writes that matter for exactly that
+  // reason.
+  try {
+    await redis.srem(keys.sessionIndex(row.id), oldJti);
+  } catch (err) {
+    log.warn(
+      { err, userId: row.id },
+      '[auth] refresh: stale index entry not pruned — inert, session already consumed',
+    );
+  }
+
+  // No `user`: apidoc §8.2's refresh response is the token pair alone.
+  return { accessToken, refreshToken };
+}
+
+export default { register, generateToken, login, refresh, REFRESH_COOKIE };

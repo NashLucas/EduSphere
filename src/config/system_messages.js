@@ -99,6 +99,22 @@ export const MESSAGES = Object.freeze({
     // ban and of a soft deletion at once. Names an action the reader can take,
     // because they cannot fix this one themselves.
     ACCOUNT_DISABLED: 'This account has been disabled. Please contact support.',
+    // authored — task 3.5. The ONLY 401 POST /auth/refresh ever returns, and it
+    // has to cover every one of apidoc §8.2's three causes at once: "Cookie
+    // absent, expired, or its session:<jti> key no longer exists in Redis
+    // (revoked)". The service reaches four more: a signature that does not
+    // verify, a `type` claim that is not 'refresh', claims it cannot use, and an
+    // account banned between login and refresh.
+    //
+    // One string for all seven is the security property, exactly as
+    // INVALID_CREDENTIALS is. Distinguishing "expired" from "revoked" tells the
+    // holder of a stolen cookie whether it was ever a real session, and
+    // distinguishing "banned" would make this endpoint the ban oracle that
+    // login's 403 is careful to charge a password for.
+    //
+    // Says "no longer valid" rather than "expired", because it is read in cases
+    // where nothing expired, and names the one action that always resolves it.
+    SESSION_INVALID: 'Your session is no longer valid. Please sign in again.',
   }),
 
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong
