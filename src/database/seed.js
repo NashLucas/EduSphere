@@ -28,14 +28,12 @@
 import { PrismaClient, UserRole, AchievementCriteria } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
+import { BCRYPT_ROUNDS } from '../config/constants.js';
+
 // Own client, not the src/database/index.js singleton (task 1.6): that one caches
 // onto globalThis and never disconnects, which is right for a long-lived server
 // and wrong for a one-shot script that must release the connection and exit.
 const prisma = new PrismaClient();
-
-// bcryptjs cost factor 12 — TRD §7 ("Password Hashing: bcryptjs with salt round
-// cost factor 12"). The same constant the auth service hashes with on Day 3.
-const BCRYPT_ROUNDS = 12;
 
 // `icon` holds an icon NAME, not an emoji or a URL — apidoc §8.5 documents
 // `{ "name": "Artificial Intelligence", "slug": "ai", "icon": "cpu",
@@ -196,8 +194,9 @@ function resolveAdminCredentials() {
 async function seed() {
   const admin = resolveAdminCredentials();
 
-  // Hashed OUTSIDE the transaction: bcrypt at cost 12 takes ~100ms of CPU and
-  // has no reason to be holding a database transaction open while it runs.
+  // Hashed OUTSIDE the transaction: bcrypt at cost 12 takes ~290 ms of CPU
+  // (measured, see BCRYPT_ROUNDS) and has no reason to be holding a database
+  // transaction open while it runs.
   const passwordHash = await bcrypt.hash(admin.password, BCRYPT_ROUNDS);
 
   const writes = [

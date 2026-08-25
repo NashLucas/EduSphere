@@ -82,14 +82,30 @@
 // auth guard reads, so they get no schema: mounting validate({body: empty}) on
 // logout would only add a way for it to fail.
 //
-// The token builder bounds length and rejects blanks; it does not assert an
-// alphabet. Task 3.3 owns token generation, and a hex regex written now is a
-// guess that would reject the real generator's output the day it lands. Worth
-// tightening to the actual alphabet once 3.3 pins it.
+// ── THE TOKEN ALPHABET, PINNED BY TASK 3.3 ───────────────────────────────────
+//
+// Earlier this builder bounded length and rejected blanks without asserting an
+// alphabet, because task 3.3 had not yet decided what a token looks like. It has:
+// `generateToken()` in auth.service.js returns `randomBytes(TOKEN.BYTES)` as hex,
+// so a real token is exactly TOKEN.LENGTH lowercase hex characters, and anything
+// else was never issued by this application.
+//
+// One `.regex()` REPLACES the old `.min(1).max(...)` pair rather than joining it.
+// Zod runs every string check and collects every failure (see the password note
+// above), so keeping a length bound beside an exact-length pattern would report
+// the same sentence twice for one overlong token. The pattern subsumes both: ''
+// fails it, and so does a megabyte of junk.
+//
+// This does mean a malformed token now gets 422 from the schema where an unknown
+// one gets 400 from the service. That is not an enumeration oracle: it separates
+// "this cannot be a token" — which the caller can determine from the format
+// without asking — from "this is not a live token", which is the answer worth
+// hiding, and TOKEN_INVALID keeps that second answer identical for unknown,
+// consumed and expired alike.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { z } from 'zod';
-import { FIELD_LIMITS, UserRole } from '../../config/constants.js';
+import { FIELD_LIMITS, TOKEN, UserRole } from '../../config/constants.js';
 import { MESSAGES } from '../../config/system_messages.js';
 
 const V = MESSAGES.VALIDATION;
@@ -102,6 +118,13 @@ const PASSWORD_POLICY = new RegExp(
   `^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).{${FIELD_LIMITS.PASSWORD_MIN_LENGTH},}$`,
   's',
 );
+
+// Exactly what generateToken() emits: TOKEN.LENGTH lowercase hex characters.
+// Built from the constant for the same reason PASSWORD_POLICY is -- the generator
+// and its validator must not be able to disagree. Case-sensitive on purpose:
+// `toString('hex')` is lowercase, and a token that arrives uppercased was not
+// copy-pasted, it was retyped or manufactured.
+const TOKEN_PATTERN = new RegExp(`^[0-9a-f]{${TOKEN.LENGTH}}$`);
 
 // ── Field builders ───────────────────────────────────────────────────────────
 //
@@ -137,12 +160,9 @@ const submittedPassword = z.string().min(1, V.PASSWORD_REQUIRED);
 
 // An emailed single-use token: verify-email, reset-password. Trimmed because it
 // arrives via copy-paste out of a mail client, and no token alphabet contains
-// whitespace, so trimming can only rescue a valid token.
-const token = z
-  .string()
-  .trim()
-  .min(1, V.TOKEN_INVALID)
-  .max(FIELD_LIMITS.TOKEN_MAX_LENGTH, V.TOKEN_INVALID);
+// whitespace, so trimming can only rescue a valid token. One check, one issue --
+// see the alphabet note in the header.
+const token = z.string().trim().regex(TOKEN_PATTERN, V.TOKEN_INVALID);
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
