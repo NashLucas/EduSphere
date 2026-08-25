@@ -87,6 +87,18 @@ export const MESSAGES = Object.freeze({
     // password. Distinguishing them turns the login form into an account
     // oracle, which is how credential-stuffing lists get validated.
     INVALID_CREDENTIALS: 'Invalid email or password',
+    // authored — task 3.4. The 403 of apidoc §8.2: "credentials valid but the
+    // account is banned or soft-deleted. Distinct from 401 — the caller proved
+    // identity; the account is denied."
+    //
+    // ONE string for both states, because apidoc gives them one row. It is not
+    // an enumeration leak the way INVALID_CREDENTIALS would be — reaching this
+    // message costs a correct password, so the reader owns the account.
+    //
+    // "Disabled" rather than "suspended" or "deleted": it has to be true of a
+    // ban and of a soft deletion at once. Names an action the reader can take,
+    // because they cannot fix this one themselves.
+    ACCOUNT_DISABLED: 'This account has been disabled. Please contact support.',
   }),
 
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong
