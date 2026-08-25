@@ -178,6 +178,48 @@ export function passwordReset(token) {
   return `reset:pw:${hashToken(token, 'token')}`;
 }
 
+/** The exact shape passwordReset() emits: the literal prefix and a hex digest. */
+const PASSWORD_RESET_KEY = /^reset:pw:[0-9a-f]{64}$/;
+
+/**
+ * `reset:pw:user:<userId>` — String, 15 minutes. The reset token key currently
+ * valid for one user, so that issuing a new token can delete the previous one.
+ *
+ * THE ONE KEY SHAPE HERE THAT §7.1's TABLE DOES NOT LIST, added for TRD:1477 —
+ * "issuing a new token for the same purpose invalidates the previous one". That
+ * sentence is unimplementable from the table alone: the token key is derived from
+ * the token's digest, so a second issue has no way back to the first one's key
+ * from the userId it holds. Either a reverse pointer exists or a superseded token
+ * stays live for its full 15 minutes, which is the gap TRD:1477 closes.
+ *
+ * It shares TTL.passwordReset rather than owning a TTL, deliberately: a pointer
+ * that outlived the token it names would send the next issue to UNLINK a key that
+ * had already expired, and one that died sooner would fail to supersede a token
+ * still live. The same number is the only correct one.
+ *
+ * Nesting under `reset:pw:` is safe rather than merely tidy — a sha256 digest is
+ * 64 characters of [0-9a-f] and cannot contain a colon, so `user:<uuid>` can
+ * never collide with a token key (measured), while staying inside the `reset:`
+ * namespace root that assertSweepable() and NAMESPACE_ROOTS already know about.
+ */
+export function passwordResetPointer(userId) {
+  return `reset:pw:user:${segment(userId, 'userId')}`;
+}
+
+/**
+ * Whether a value read back out of Redis is a password-reset token key.
+ *
+ * The pointer above stores a KEY NAME, which is then handed to UNLINK — the one
+ * place in this codebase where a stored value decides what gets deleted. This
+ * check is what keeps that from being a primitive for deleting anything else:
+ * only the shape passwordReset() itself emits is accepted, so a pointer holding
+ * `session:index:<victim>` — or its own key name, which would make a reset
+ * delete its own pointer — is refused rather than followed.
+ */
+export function isPasswordResetKey(value) {
+  return typeof value === 'string' && PASSWORD_RESET_KEY.test(value);
+}
+
 /**
  * `cache:<resource>:<discriminator>` — the two catalog shapes in §7.1.
  *
@@ -240,6 +282,7 @@ export const keys = Object.freeze({
   userState,
   emailVerify,
   passwordReset,
+  passwordResetPointer,
   cache,
   rateLimit,
   rateLimitPrefix,

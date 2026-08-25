@@ -566,6 +566,194 @@
 // §8.2 guards the route as Authenticated and 3.10's requireAuth is what enforces
 // it; what arrives here is `req.user.id`, and the only thing logout() does with
 // it is refuse to revoke a session that belongs to someone else.
+//
+// ── FORGOT-PASSWORD HAS ONE ANSWER, AND REDIS DOWN MUST NOT CHANGE THAT ──────
+//
+// TRD:1480 and apidoc §8.2 agree, and apidoc gives the route a single row: 200,
+// with an identical body whether or not an account exists for the address.
+// Anything else is an account-enumeration oracle, and since the route is
+// unauthenticated the oracle would be open to everyone.
+//
+// The status code is the easy half. The half that is easy to get wrong is what
+// happens when Redis is unavailable, because TRD:1478 makes Redis a HARD
+// dependency here — "verification and reset fail closed with 503" — and the two
+// branches do not touch it the same number of times:
+//
+//   the address exists       — a token is written, setWithTTL throws, 503.
+//   the address does not     — nothing is written, nothing throws, 200.
+//
+// A Redis outage would therefore turn this route into precisely the oracle the
+// shared 200 exists to prevent, and an exact one rather than a statistical one:
+// 503 means the account is real. It is also remotely triggerable by anyone able
+// to push Redis over.
+//
+// So the no-account branch spends one unconditional Redis command — an EXISTS
+// against a key derived from a throwaway token, which cannot be present — for the
+// sole purpose of failing where the other branch fails. Both branches then answer
+// 503 together, or 200 together.
+//
+// THAT DECOY IS NOT A TIMING DEFENCE, and it would be a weak one. Measured on
+// this stack: the PostgreSQL lookup differs by 0.094 ms between a hit and a miss
+// (1.494 ms against 1.400 ms, 40 runs each), one Redis round trip costs 0.740 ms,
+// and the hit branch makes up to four of them against the miss branch's one. So
+// roughly 2 ms of the response latency does still correlate with the account
+// existing. What makes that unreachable is the rate limit apidoc:140 puts on this
+// route — 5 requests per 15 minutes, 480 samples a day — against a ~2 ms signal
+// under network jitter of tens of milliseconds. The outage asymmetry is a
+// single-request certainty; the timing asymmetry is not. The decoy is there for
+// the first, and claiming it addresses the second would be worse than saying it
+// does not.
+//
+// ── forgotPassword() RETURNS NOTHING, ON PURPOSE ─────────────────────────────
+//
+// Not `{ sent: true }`, not the user, not a boolean. undefined.
+//
+// logout() returning `{ revoked }` is safe because a caller who leaks it leaks
+// nothing — whoever reads it already owned the session. Here the same shape would
+// be a loaded gun: `{ sent: false }` IS the enumeration answer, sitting in the
+// service's return value, one plausible controller away from being serialised
+// into `data`. 3.9 is meant to answer with the message and nothing else.
+//
+// A function that cannot report which branch it took cannot be made to leak which
+// branch it took. The operator-facing half of that goes to the log, where no
+// client reads it.
+//
+// ── TRD:1477 NEEDS A KEY THAT §7.1's TABLE DOES NOT LIST ─────────────────────
+//
+// "Issuing a new token for the same purpose invalidates the previous one"
+// (TRD:1477). plan:348 does not ask for it and §7.1's table has no row for it, so
+// this is the one part of 3.7 that goes past the task's literal text — said plainly
+// here because it is the part a reviewer should consciously keep or delete.
+//
+// It cannot be built from the table as written. `reset:pw:<sha256(token)>` is
+// derived FROM the token and stores only the userId, so a second forgot-password
+// knows the user and has no way back to the first token's key: the digest is
+// one-way and the raw token was never persisted (TRD:1474). Without a reverse
+// pointer, TRD:1477 is unimplementable and every token issued stays live for its
+// full 15 minutes — ask three times, and three links work.
+//
+// keys.passwordResetPointer(userId) is that pointer: `reset:pw:user:<userId>`
+// holding the token key currently valid for that user. Three properties are what
+// made it safe enough to add:
+//
+//   It cannot collide with a token key. A sha256 digest is 64 characters of
+//   [0-9a-f] and cannot contain a colon, so `user:<uuid>` is not a shape
+//   passwordReset() is able to emit (measured).
+//
+//   It is written AFTER the token it names, and its failure is best-effort. A
+//   pointer that never landed degrades this route to exactly the behaviour it
+//   would have without any of this — the previous token lives out its TTL —
+//   rather than to a reset that does not work.
+//
+//   What it names is validated before anything is deleted. isPasswordResetKey()
+//   gates the UNLINK, because this is the one place in this codebase where a
+//   value read out of Redis chooses which key gets destroyed. Ungated, a pointer
+//   holding `session:index:<victimId>` would make a forgot-password delete that
+//   victim's session index — the same "UNLINK has no type check" hazard as line
+//   494, arrived at through a value rather than through a jti.
+//
+// ── THE ORDER OF resetPassword(), AND WHY REVOKE-ALL COMES LAST ──────────────
+//
+// plan:348 fixes it: hash the presented token, look it up, delete it before
+// accepting the new password, hash the new password, update the user, then revoke
+// every session. Two of those positions carry weight.
+//
+// THE TOKEN DIES BEFORE THE NEW PASSWORD IS ACCEPTED. GETDEL is what makes it
+// single-use (TRD:1475: "deleted in the same operation that consumes it";
+// cache-keys.js:41), and that delete has to precede the ~290 ms bcrypt hash
+// rather than follow the update. Two requests replaying one intercepted token
+// concurrently both pass a GET-then-delete, and the loser still gets to set a
+// password — so the window is not theoretical, it is 290 ms wide by construction.
+//
+// REVOCATION IS LAST, AFTER THE PASSWORD HAS CHANGED. TRD:1476 requires a reset
+// to "log out any attacker already holding a refresh token", and revoking first
+// would satisfy the letter of that while leaving a hole: between the revocation
+// and the update the account's OLD password is still live, and the attacker who
+// knows it — the reason the victim is resetting at all — can POST /auth/login in
+// that interval and hold a session the reset never touches. Changing the password
+// first shuts login before the sweep, so no new session can appear behind it.
+//
+// ── WHAT GETDEL HANDS BACK IS JSON, NOT A USER ID ────────────────────────────
+//
+// setWithTTL JSON.stringifies everything it writes (cache-keys.js:344), so the
+// userId stored under a reset key comes back out of GETDEL as `"<uuid>"` WITH THE
+// QUOTES — measured: '"probe37-user-id"'. Used as it arrives it becomes
+// `where: { id: '"6f0e…"' }`, which matches no row, raises P2025, and would be
+// answered by this function as "Invalid or expired token".
+//
+// It gets a paragraph because of how it would present: every reset link in
+// production failing with a message claiming the link expired, on a path whose
+// unit tests all pass if the mock stores the value the same way the code reads it.
+// So the parse is explicit, its result is shape-checked, and a value that is not a
+// JSON string is logged at ERROR — nothing but this module writes those keys, so a
+// malformed one is corruption or tampering rather than anything a user did.
+//
+// refresh() does not have this problem and needs no such handling: it reads the
+// session record only to learn whether the key was there, and takes the userId
+// from the verified JWT's `sub` claim (line 1181). Checked before writing this,
+// not assumed.
+//
+// ── THE SESSION SWEEP IS FATAL HERE, WHERE THE SAME COMMAND IS NOT IN logout ─
+//
+// logout() answers 200 when its UNLINK fails (line 421). resetPassword() answers
+// 503 when its sweep fails, and the difference is not inconsistency.
+//
+// In logout, revocation is the whole of what the caller asked for, and failing it
+// costs one session that expires on its own — while a 503 there would strand a
+// live cookie in the browser of someone who asked to be signed out, which is the
+// worse of the two outcomes for the person at the keyboard.
+//
+// In a reset, revocation is part of what a reset IS. TRD:1476 makes it a defined
+// component of the operation, and the caller is very often someone who believes
+// their account is compromised. Reporting success over a sweep that did not
+// happen tells that person the attacker is gone when the attacker still holds a
+// redeemable refresh token. The password has already changed by then, so the 503
+// is honest rather than destructive: it says "your password is changed and I could
+// not finish signing your other devices out", which is exactly the state.
+//
+// The index Set's own UNLINK is best-effort behind that, at warn. Once every
+// session key is gone the Set is a list of names for keys that do not exist, and
+// plan:367 and TRD:1723 both define the index as a SUPERSET — stale members are
+// inert by specification. The stale pointer is dropped in the same breath, for the
+// same reason.
+//
+// A member that cannot be turned into a key is SKIPPED rather than fatal. Nothing
+// but login() and refresh() write that Set, and both write randomUUID jtis, so a
+// member keys.session() refuses means the keyspace was tampered with — but making
+// it fatal would be a poison pill: every retry would hit the same bad member and
+// the account could never be reset at all. Skip it, warn, revoke the rest.
+//
+// ── WHAT A RESET STILL CANNOT REVOKE ─────────────────────────────────────────
+//
+// Access tokens. Same 15-minute residual logout has (line 531), for the same
+// reason — 3.10's requireAuth reads user:state, not the session record — so an
+// attacker's already-issued Bearer token keeps working for up to
+// JWT_ACCESS_EXPIRES_IN after the victim resets. TRD:1476's wording is scoped to
+// "a refresh token", which the index sweep does satisfy in full, so this is a
+// residual of plan:369's deliberate trade rather than a miss against the
+// requirement. It is named because "log out any attacker" reads stronger than
+// what any design without a per-request session lookup can deliver.
+//
+// user:state is not rewritten. A password change alters none of `role`,
+// `isBanned`, `isEmailVerified` or `deletedAt`, so there is nothing in that record
+// to correct and rewriting it would only reset a TTL.
+//
+// A BANNED account can complete a reset. The token was earned by controlling the
+// mailbox, the ban is enforced by login's 403 (line 150), and every session is
+// swept regardless — so the reset changes a hash the banned user still cannot use.
+// Refusing here would instead answer differently for banned and unbanned
+// addresses, which hands back a ban oracle on an unauthenticated route. A
+// SOFT-DELETED account is a different case and is excluded: `deletedAt: null` is
+// part of the lookup, so no link is ever issued for one.
+//
+// ── WHAT 3.7 LEAVES TO TASK 3.9 ──────────────────────────────────────────────
+//
+// The 5-per-15-minutes limit on both routes (apidoc:140), which is what keeps the
+// residual timing signal above out of reach and what stops the mailer being used
+// as an amplifier; the response bodies; and the decision not to expose
+// `revokedSessions` to the client — it is returned here for the audit log Day 13
+// wants, and a count of the account's devices is not something the response needs
+// to carry.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -578,13 +766,22 @@ import redis from '../../config/redis.js';
 import { BCRYPT_ROUNDS, TOKEN, UserRole } from '../../config/constants.js';
 import { MESSAGES } from '../../config/system_messages.js';
 import {
+  BadRequestError,
   ConflictError,
   ForbiddenError,
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../utils/app-error.js';
-import { keys, setWithTTL, TTL } from '../../utils/cache-keys.js';
-import { sendVerificationEmail } from '../../integrations/email/index.js';
+import {
+  isPasswordResetKey,
+  keys,
+  setWithTTL,
+  TTL,
+} from '../../utils/cache-keys.js';
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from '../../integrations/email/index.js';
 import { logger } from '../../middlewares/logging.middleware.js';
 
 const log = logger.child({ module: 'auth' });
@@ -1473,11 +1670,338 @@ export async function logout(token, { userId } = {}) {
   return { revoked };
 }
 
+// ── Password recovery — task 3.7 ─────────────────────────────────────────────
+
+/**
+ * The fields forgot-password needs, and no more. `deletedAt` is selected in order
+ * to be tested, not returned: a soft-deleted account must not be sent a link, and
+ * filtering in the WHERE clause instead would make the two cases indistinguishable
+ * in the log, where telling "no such address" from "deleted account" is useful.
+ */
+const RECOVERY_FIELDS = Object.freeze({
+  id: true,
+  email: true,
+  fullName: true,
+  deletedAt: true,
+});
+
+/**
+ * Invalidates the reset token previously issued to a user, if there is one.
+ *
+ * TRD:1477, through the reverse pointer argued in the header. Best-effort by
+ * design: every failure in here leaves the previous token alive for the rest of
+ * its 15 minutes, which is the behaviour this route would have without the
+ * pointer at all, so nothing is worth failing the request over.
+ *
+ * Returns nothing. The caller has no decision to make on the outcome.
+ */
+async function supersedePreviousResetToken(userId) {
+  try {
+    const previous = await redis.getdel(keys.passwordResetPointer(userId));
+
+    if (previous === null) {
+      return;
+    }
+
+    // JSON, like everything setWithTTL writes — see the header. The stored value
+    // is a KEY NAME here rather than an id, so what it parses to decides what
+    // gets deleted, and isPasswordResetKey() is the gate on that.
+    let namedKey;
+    try {
+      namedKey = JSON.parse(previous);
+    } catch {
+      namedKey = null;
+    }
+
+    if (!isPasswordResetKey(namedKey)) {
+      log.error(
+        { userId, previous },
+        '[auth] forgotPassword: reset pointer held something that is not a reset key — refusing to unlink it',
+      );
+      return;
+    }
+
+    await redis.unlink(namedKey);
+  } catch (err) {
+    log.warn(
+      { err, userId },
+      '[auth] forgotPassword: previous reset token not superseded — it stays valid until its TTL expires',
+    );
+  }
+}
+
+/**
+ * Issues a password-reset token for an email address, if an account has it.
+ *
+ * Returns undefined in every case, and throws only for a Redis outage — the same
+ * outage on either branch (see the header). A caller cannot learn from this
+ * function whether the address exists, which is the point.
+ *
+ * @param {{ email: string }} input
+ * @returns {Promise<void>}
+ * @throws {AppError} 503 when Redis is unavailable, on BOTH branches
+ */
+export async function forgotPassword({ email }) {
+  // Re-normalised for the reason register() gives at line 654: `email @unique` is
+  // a case-sensitive index, so a caller reaching this function without the schema
+  // would look up an address that can never match the row it belongs to — and
+  // silently get the no-account branch, which looks like success.
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // Not wrapped in a try: a PostgreSQL failure here propagates to the error
+  // handler as a 500, identically on both branches, so it leaks nothing the way an
+  // unmatched Redis failure would. There is no documented 503 for this route's
+  // database read, and inventing one would only differ from the 500 in wording.
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: RECOVERY_FIELDS,
+  });
+
+  if (!user || user.deletedAt !== null) {
+    // The decoy, and the only reason it exists: this branch has no Redis work of
+    // its own, so without a command that fails when the other branch's writes
+    // fail, a Redis outage answers 503 for real accounts and 200 for the rest.
+    // EXISTS against a fresh token's key can only ever return 0.
+    try {
+      await redis.exists(keys.passwordReset(generateToken()));
+    } catch (err) {
+      log.error(
+        { err },
+        '[auth] forgotPassword: redis unavailable — 503 on the no-account branch, matching the branch that writes',
+      );
+      throw ServiceUnavailableError();
+    }
+
+    // Info, not warn: a typo'd address is ordinary. The log is the only place the
+    // two branches are distinguishable, and it is the right place.
+    log.info(
+      { email: normalizedEmail, softDeleted: Boolean(user) },
+      '[auth] forgotPassword: no eligible account — 200 returned, no email sent',
+    );
+    return;
+  }
+
+  // Computed before any write, as register() does at line 696: hashing is pure
+  // CPU, so a malformed token surfaces here as the bug it is instead of inside a
+  // catch that reports outages.
+  const rawToken = generateToken();
+  const resetKey = keys.passwordReset(rawToken);
+
+  // The new token lands BEFORE the old one is dropped, so no ordering of failures
+  // can leave the account with no usable link. The reverse — supersede first —
+  // would delete a working token and then fail to write its replacement.
+  try {
+    await setWithTTL(resetKey, user.id, TTL.passwordReset);
+  } catch (err) {
+    // Logged before conversion, as register() does: the client's 503 cannot tell
+    // an outage from a bug on this line, and this is the only record that can.
+    log.error(
+      { err, userId: user.id },
+      '[auth] forgotPassword: reset token write failed — no email sent',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  await supersedePreviousResetToken(user.id);
+
+  // The pointer for the token just written, last and best-effort. A failure here
+  // costs TRD:1477 for the NEXT issue only; this token works either way.
+  try {
+    await setWithTTL(
+      keys.passwordResetPointer(user.id),
+      resetKey,
+      TTL.passwordReset,
+    );
+  } catch (err) {
+    log.warn(
+      { err, userId: user.id },
+      '[auth] forgotPassword: reset pointer not written — a later token will not supersede this one',
+    );
+  }
+
+  // Fire-and-forget, after the token is redeemable, for the reasons register()
+  // records at line 746: no await and no .catch() because nothing in the email
+  // integration can reject, and TRD:2009 requires a provider outage to cost an
+  // email rather than the operation. The raw token exists here and in the message
+  // it is sent in — never in Redis, never in PostgreSQL (TRD:1474).
+  sendPasswordResetEmail({
+    to: user.email,
+    fullName: user.fullName,
+    token: rawToken,
+  });
+
+  log.info({ userId: user.id }, '[auth] forgotPassword: reset link dispatched');
+}
+
+/**
+ * Consumes a reset token, sets a new password, and ends every session.
+ *
+ * @param {{ token: string, newPassword: string }} input
+ * @returns {Promise<{ revokedSessions: number }>}
+ * @throws {AppError} 400 when the token is unknown, expired, already used or the
+ *         account behind it is gone; 503 when Redis is unavailable or the session
+ *         sweep could not be completed
+ */
+export async function resetPassword({ token, newPassword }) {
+  // Built in its own guard for the reason refresh() gives at line 1183:
+  // keys.passwordReset() THROWS on a token that is empty or not a string, and a
+  // TypeError escaping into the Redis catch below would be reported as an outage.
+  // The schema already requires a non-empty string; this is the guard for every
+  // other way into an exported function.
+  let resetKey;
+  try {
+    resetKey = keys.passwordReset(token);
+  } catch {
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  // GETDEL, not GET — read and consume in one command, which is what makes the
+  // token single-use (TRD:1475). This is the commit point for the token: past
+  // here it is spent whether or not the rest of the function succeeds, and that
+  // is the correct trade against two concurrent replays of one token.
+  let stored;
+  try {
+    stored = await redis.getdel(resetKey);
+  } catch (err) {
+    log.error(
+      { err },
+      '[auth] resetPassword: redis unavailable — token not consumed, no password changed',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // Unknown, expired, or already redeemed. One answer for all three, deliberately
+  // — MESSAGES.VALIDATION.TOKEN_INVALID's own comment fixes that, so a token
+  // cannot be probed to learn whether it was ever real.
+  if (stored === null) {
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  // The JSON the header describes. A value that will not parse, or parses to
+  // something that is not a non-empty string, is corruption in a namespace only
+  // this module writes — so it is logged at ERROR and answered as an invalid
+  // token, which is the honest answer to the caller either way.
+  let userId;
+  try {
+    userId = JSON.parse(stored);
+  } catch {
+    userId = null;
+  }
+
+  if (typeof userId !== 'string' || userId.length === 0) {
+    log.error(
+      { resetKey, stored },
+      '[auth] resetPassword: reset key held a value that is not a user id — treating the token as invalid',
+    );
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  // After the token is consumed, never before — ~290 ms of CPU (see
+  // BCRYPT_ROUNDS) is exactly the window a GET-then-delete would have left open
+  // for a second replay of the same token.
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+  try {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+      select: { id: true },
+    });
+  } catch (err) {
+    // P2025 — the account was hard-deleted between the link being sent and used.
+    // Measured: update against an absent id raises P2025 rather than returning
+    // null. Answered as an invalid token because from the caller's side that is
+    // what it is, and because a distinct message would confirm the address once
+    // belonged to an account.
+    if (err?.code === 'P2025') {
+      log.warn(
+        { userId },
+        '[auth] resetPassword: token valid but the account no longer exists',
+      );
+      throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+    }
+    throw err;
+  }
+
+  // ── Past the commit point. The password has changed ─────────────────────────
+  //
+  // Everything below is TRD:1476, and it runs AFTER the update so that the old
+  // password cannot buy a new session behind the sweep (see the header).
+  let revokedSessions = 0;
+  const indexKey = keys.sessionIndex(userId);
+
+  try {
+    const jtis = await redis.smembers(indexKey);
+
+    // A member that cannot become a key is skipped, not fatal — the poison-pill
+    // argument in the header. keys.session() throws on anything outside
+    // /^[A-Za-z0-9._-]+$/, which is also what stops a forged member naming the
+    // index key itself (cache-keys.js:75).
+    const sessionKeys = [];
+    let unusable = 0;
+    for (const jti of jtis) {
+      try {
+        sessionKeys.push(keys.session(jti));
+      } catch {
+        unusable += 1;
+      }
+    }
+
+    if (unusable > 0) {
+      log.warn(
+        { userId, unusable },
+        '[auth] resetPassword: session index held unusable members — skipped, remaining sessions revoked',
+      );
+    }
+
+    // The length guard is not defensive style; it is required. Measured — UNLINK
+    // with no arguments throws ReplyError "wrong number of arguments", and an
+    // empty index is the ordinary case for an account that never logged in.
+    if (sessionKeys.length > 0) {
+      // From UNLINK's own return value, never sessionKeys.length: the index is a
+      // superset (plan:367, plan:858), so members whose session keys already
+      // expired would otherwise be counted as revocations. Measured — 3 keys
+      // passed, 2 present, returns 2.
+      revokedSessions = await redis.unlink(...sessionKeys);
+    }
+  } catch (err) {
+    // Fatal, unlike the same command in logout() — argued at length in the
+    // header. The password has already changed, so this 503 reports a partial
+    // success truthfully rather than undoing anything.
+    log.error(
+      { err, userId },
+      '[auth] resetPassword: password changed but sessions could NOT be revoked',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // Housekeeping, best-effort, both keys inert once the sessions are gone: the
+  // index now lists names of keys that do not exist, and the pointer names the
+  // token this request already consumed.
+  try {
+    await redis.unlink(indexKey, keys.passwordResetPointer(userId));
+  } catch (err) {
+    log.warn(
+      { err, userId },
+      '[auth] resetPassword: index and pointer not cleaned up — inert, every session already revoked',
+    );
+  }
+
+  log.info(
+    { userId, revokedSessions },
+    '[auth] resetPassword: password changed, all sessions revoked',
+  );
+
+  return { revokedSessions };
+}
+
 export default {
   register,
   generateToken,
   login,
   refresh,
   logout,
+  forgotPassword,
+  resetPassword,
   REFRESH_COOKIE,
 };

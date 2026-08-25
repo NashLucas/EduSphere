@@ -115,6 +115,33 @@ export const MESSAGES = Object.freeze({
     // Says "no longer valid" rather than "expired", because it is read in cases
     // where nothing expired, and names the one action that always resolves it.
     SESSION_INVALID: 'Your session is no longer valid. Please sign in again.',
+    // authored — task 3.7. POST /auth/forgot-password, which apidoc §8.2 gives a
+    // 200 row and nothing else: the response is byte-identical whether or not an
+    // account exists for the address (TRD:1480).
+    //
+    // That constraint is what fixes the wording. "We have sent you a link" would
+    // be a lie on the branch where no account was found, and a true sentence on
+    // one branch and a false one on the other is the enumeration leak the
+    // identical status code was chosen to prevent — a reader who trusts the
+    // message learns the answer anyway. The conditional clause is the only
+    // phrasing that is honestly true of both branches at once.
+    //
+    // It does not say "check your inbox" for the same reason, and does not
+    // mention the 15-minute expiry: the email itself carries that, and repeating
+    // it here would promise a deadline to someone who is not getting a link.
+    PASSWORD_RESET_SENT:
+      'If an account exists for that address, a reset link is on its way.',
+    // authored — task 3.7. POST /auth/reset-password, apidoc §8.2's 200.
+    //
+    // The second sentence is a statement of fact, not advice: a reset revokes
+    // every refresh session the account had (TRD:1476), so the reader genuinely
+    // must sign in again on every device. It is worth saying because the
+    // alternative is a user who reads "password changed", switches to another
+    // device, finds themselves logged out, and reads that as a break-in.
+    //
+    // "Changed" rather than "reset" — the reader just chose the new password, so
+    // "reset" invites the question of what it was reset TO.
+    PASSWORD_RESET: 'Your password has been changed. Please sign in again.',
   }),
 
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong

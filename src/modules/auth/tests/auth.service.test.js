@@ -2,8 +2,9 @@
 // Auth service unit tests — plan:179 and plan:1032 ("service-layer unit tests
 // are written in the module's tests/ folder the same day the service lands").
 // Task 3.3 is the first service to land, so this is the first such file; 3.4 adds
-// the login() blocks below register()'s, 3.5 the refresh() blocks below those, and
-// 3.6 the logout() blocks below those.
+// the login() blocks below register()'s, 3.5 the refresh() blocks below those, 3.6
+// the logout() blocks below those, and 3.7 the two password-recovery blocks below
+// those again.
 //
 // These are UNIT tests: PostgreSQL and the Redis write are mocked, so the suite
 // runs with no Docker and no .env. That boundary is deliberate rather than
@@ -89,6 +90,17 @@ const create = vi.fn(async ({ data, select }) => {
 
 const findUnique = vi.fn(async () => null);
 
+// 3.7. Rejects by default with the error a live PostgreSQL raises for an id that
+// is not there — measured: P2025, not a null return — so a resetPassword test has
+// to arm the account it claims to be updating.
+const update = vi.fn(async () => {
+  const err = new Error(
+    'An operation failed because it depends on one or more records that were required but not found.',
+  );
+  err.code = 'P2025';
+  throw err;
+});
+
 /**
  * How many transactions are open right now — 1 while the callback is running.
  *
@@ -98,7 +110,7 @@ const findUnique = vi.fn(async () => null);
 let txDepth = 0;
 
 const prismaMock = {
-  user: { findUnique, create },
+  user: { findUnique, create, update },
   async $transaction(callback) {
     staged = [];
     txDepth += 1;
@@ -140,22 +152,24 @@ vi.mock('bcryptjs', async () => {
   };
 });
 
-// SADD, GETDEL, UNLINK and SREM are the Redis commands this module issues
-// directly; everything else goes through cache-keys.js, whose setWithTTL is
-// mocked below. Importing the real client would be harmless (lazyConnect opens no
-// socket) but would leave the index write, the rotation gate and the logout
-// revocation unobservable.
+// SADD, GETDEL, UNLINK, SREM, EXISTS and SMEMBERS are the Redis commands this
+// module issues directly; everything else goes through cache-keys.js, whose
+// setWithTTL is mocked below. Importing the real client would be harmless
+// (lazyConnect opens no socket) but would leave the index write, the rotation
+// gate, the logout revocation and 3.7's reset sweep unobservable.
 //
-// `getdel` and `unlink` both default to the ABSENT answer — null and 0 — so a
-// test that forgets to arm a live session fails as an unauthenticated one, or
-// reports `revoked: false`, rather than passing on a mock's convenient
-// truthiness.
+// `getdel`, `unlink`, `exists` and `smembers` all default to the ABSENT answer —
+// null, 0, 0 and [] — so a test that forgets to arm a live session fails as an
+// unauthenticated one, or reports `revoked: false`, rather than passing on a
+// mock's convenient truthiness.
 vi.mock('../../../config/redis.js', () => {
   const client = {
     sadd: vi.fn(async () => 1),
     getdel: vi.fn(async () => null),
     unlink: vi.fn(async () => 0),
     srem: vi.fn(async () => 1),
+    exists: vi.fn(async () => 0),
+    smembers: vi.fn(async () => []),
   };
   return { redis: client, default: client };
 });
@@ -167,6 +181,7 @@ vi.mock('../../../utils/cache-keys.js', async (importOriginal) => ({
 
 vi.mock('../../../integrations/email/index.js', () => ({
   sendVerificationEmail: vi.fn(),
+  sendPasswordResetEmail: vi.fn(),
 }));
 
 vi.mock('../../../middlewares/logging.middleware.js', () => {
@@ -177,11 +192,19 @@ vi.mock('../../../middlewares/logging.middleware.js', () => {
 const bcrypt = (await import('bcryptjs')).default;
 const { redis } = await import('../../../config/redis.js');
 const { setWithTTL } = await import('../../../utils/cache-keys.js');
-const { sendVerificationEmail } =
+const { sendVerificationEmail, sendPasswordResetEmail } =
   await import('../../../integrations/email/index.js');
 const { logger } = await import('../../../middlewares/logging.middleware.js');
-const { register, generateToken, login, refresh, logout, REFRESH_COOKIE } =
-  await import('../auth.service.js');
+const {
+  register,
+  generateToken,
+  login,
+  refresh,
+  logout,
+  forgotPassword,
+  resetPassword,
+  REFRESH_COOKIE,
+} = await import('../auth.service.js');
 
 const VALID = Object.freeze({
   fullName: 'Ada Lovelace',
@@ -219,13 +242,26 @@ beforeEach(() => {
   });
   // Labelled for the same reason, and defaulting to 0 — nothing removed — so a
   // logout test has to say so explicitly to claim a session was revoked.
-  redis.unlink.mockImplementation(async (key) => {
-    writeOrder.push(`UNLINK ${key}`);
+  //
+  // Variadic since 3.7: resetPassword UNLINKs every session key in one command,
+  // and a single-parameter mock would record the first and silently drop the rest,
+  // which is exactly the bug the ordering assertions exist to catch.
+  redis.unlink.mockImplementation(async (...args) => {
+    writeOrder.push(`UNLINK ${args.join(' ')}`);
     return 0;
   });
   // Absent by default: a refresh test that forgets to arm a session fails as an
   // unauthenticated one rather than passing on a mock's convenient truthiness.
   redis.getdel.mockResolvedValue(null);
+  // 3.7. Empty index, absent key — the answers a live Redis gives for an account
+  // that never logged in (measured: SMEMBERS on a missing key returns a real []).
+  redis.smembers.mockResolvedValue([]);
+  redis.exists.mockResolvedValue(0);
+  update.mockImplementation(async () => {
+    const err = new Error('Record to update not found.');
+    err.code = 'P2025';
+    throw err;
+  });
 });
 
 // ── generateToken ────────────────────────────────────────────────────────────
@@ -2011,12 +2047,17 @@ describe('logout — the revocation', () => {
     // apidoc §8.2 is "Unlinks session:<jti>", singular — a phone stays signed in
     // when a laptop signs out. The all-sessions operation is 3.7's and Day 13's,
     // and it works by SMEMBERS on the index, which is never read here.
+    //
+    // This asserted `redis.smembers` was UNDEFINED until 3.7, using the mock's own
+    // shape as the proof. 3.7 gave the mock an smembers for resetPassword, so the
+    // claim is now made the way it should always have been made — the command
+    // exists and this function does not reach for it.
     const { token } = givenLiveSession();
 
     await logout(token, { userId: ACCOUNT.id });
 
     expect(redis.unlink).toHaveBeenCalledTimes(1);
-    expect(redis.smembers).toBeUndefined();
+    expect(redis.smembers).not.toHaveBeenCalled();
     expect(redis.unlink).not.toHaveBeenCalledWith(INDEX_KEY);
   });
 
@@ -2103,6 +2144,782 @@ describe('logout — when Redis cannot be reached', () => {
 
     expect(result).toEqual({ revoked: true });
     expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Password recovery — task 3.7
+//
+// The digests below are recomputed with createHash rather than by calling
+// keys.passwordReset(), for the reason register()'s tests already do it that way:
+// asking the builder to confirm its own output proves only that it is
+// deterministic. The pointer key is likewise written out in full.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const resetKeyFor = (token) =>
+  `reset:pw:${createHash('sha256').update(token, 'utf8').digest('hex')}`;
+
+const RECOVERED = Object.freeze({
+  id: '99999999-8888-7777-6666-555555555555',
+  email: 'ada@example.com',
+  fullName: 'Ada Lovelace',
+  deletedAt: null,
+});
+
+const pointerKeyFor = (userId) => `reset:pw:user:${userId}`;
+
+/** The single argument sendPasswordResetEmail was called with. */
+const mailedToken = () => sendPasswordResetEmail.mock.calls[0][0].token;
+
+// ── forgot-password, when the address belongs to somebody ─────────────────────
+
+describe('forgotPassword — an eligible account', () => {
+  beforeEach(() => {
+    findUnique.mockResolvedValue({ ...RECOVERED });
+  });
+
+  it('stores the user id under reset:pw:<sha256(token)> for 15 minutes', async () => {
+    await forgotPassword({ email: RECOVERED.email });
+
+    const [key, value, ttl] = setWithTTL.mock.calls[0];
+    expect(key).toMatch(/^reset:pw:[0-9a-f]{64}$/);
+    expect(value).toBe(RECOVERED.id);
+    expect(ttl).toBe(TTL.passwordReset);
+    expect(ttl).toBe(15 * 60);
+  });
+
+  it('emails the RAW token and persists only its digest (TRD:1474)', async () => {
+    await forgotPassword({ email: RECOVERED.email });
+
+    const token = mailedToken();
+    expect(token).toMatch(new RegExp(`^[0-9a-f]{${TOKEN.LENGTH}}$`));
+
+    // The one assertion that ties the two halves together: what was mailed hashes
+    // to what was stored. A service that mailed a different token than it wrote
+    // would pass every other test in this block.
+    const [key] = setWithTTL.mock.calls[0];
+    expect(key).toBe(resetKeyFor(token));
+
+    // And the raw token appears in nothing that was written.
+    const written = JSON.stringify(setWithTTL.mock.calls);
+    expect(written).not.toContain(token);
+  });
+
+  it('addresses the mail from the row, not from the request', async () => {
+    // A caller could send a differently-cased address that findUnique still
+    // matches; the link must go to the stored one.
+    await forgotPassword({ email: 'ADA@Example.com  ' });
+
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    expect(sendPasswordResetEmail.mock.calls[0][0]).toMatchObject({
+      to: RECOVERED.email,
+      fullName: RECOVERED.fullName,
+    });
+  });
+
+  it('normalises the address before looking it up', async () => {
+    await forgotPassword({ email: '  ADA@Example.COM ' });
+
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { email: 'ada@example.com' },
+      select: expect.objectContaining({ id: true, deletedAt: true }),
+    });
+  });
+
+  it('never selects the password hash', async () => {
+    await forgotPassword({ email: RECOVERED.email });
+
+    const { select } = findUnique.mock.calls[0][0];
+    expect(select.passwordHash).toBeUndefined();
+    expect(Object.keys(select).sort()).toEqual([
+      'deletedAt',
+      'email',
+      'fullName',
+      'id',
+    ]);
+  });
+
+  it('returns nothing at all, so no controller can leak the branch', async () => {
+    const result = await forgotPassword({ email: RECOVERED.email });
+
+    expect(result).toBeUndefined();
+  });
+
+  it('writes the token BEFORE the pointer that names it', async () => {
+    await forgotPassword({ email: RECOVERED.email });
+
+    const token = mailedToken();
+    expect(writeOrder).toEqual([
+      resetKeyFor(token),
+      pointerKeyFor(RECOVERED.id),
+    ]);
+    expect(setWithTTL.mock.calls[1][1]).toBe(resetKeyFor(token));
+    expect(setWithTTL.mock.calls[1][2]).toBe(TTL.passwordReset);
+  });
+
+  it('dispatches the mail only after the token is redeemable', async () => {
+    // Fire-and-forget means the ordering is the only thing that stops a user
+    // clicking a link before the token it names exists.
+    let writtenWhenMailed = null;
+    sendPasswordResetEmail.mockImplementation(() => {
+      writtenWhenMailed = setWithTTL.mock.calls.length;
+    });
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(writtenWhenMailed).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not await the mailer', async () => {
+    // register()'s contract, restated here: the integration cannot reject, so a
+    // floating call is safe — and a service that awaited a slow provider would
+    // hold the request open for it.
+    sendPasswordResetEmail.mockReturnValue(new Promise(() => {}));
+
+    await expect(
+      forgotPassword({ email: RECOVERED.email }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ── forgot-password, when it is not: the enumeration contract ─────────────────
+
+describe('forgotPassword — no eligible account', () => {
+  it('answers exactly as the hit path does for an unknown address', async () => {
+    findUnique.mockResolvedValue(null);
+
+    const result = await forgotPassword({ email: 'nobody@example.com' });
+
+    expect(result).toBeUndefined();
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+
+  it('treats a soft-deleted account as absent', async () => {
+    findUnique.mockResolvedValue({
+      ...RECOVERED,
+      deletedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+
+    const result = await forgotPassword({ email: RECOVERED.email });
+
+    expect(result).toBeUndefined();
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+
+  it('still touches Redis once, with a key that cannot exist', async () => {
+    findUnique.mockResolvedValue(null);
+
+    await forgotPassword({ email: 'nobody@example.com' });
+
+    expect(redis.exists).toHaveBeenCalledTimes(1);
+    const [key] = redis.exists.mock.calls[0];
+    expect(key).toMatch(/^reset:pw:[0-9a-f]{64}$/);
+  });
+
+  it('reads rather than writes on the decoy — it must not create a token', async () => {
+    findUnique.mockResolvedValue(null);
+
+    await forgotPassword({ email: 'nobody@example.com' });
+
+    expect(setWithTTL).not.toHaveBeenCalled();
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(redis.getdel).not.toHaveBeenCalled();
+    expect(writeOrder).toEqual([]);
+  });
+
+  it('draws a fresh decoy key each time, so the probe is not a fixed key', async () => {
+    findUnique.mockResolvedValue(null);
+
+    await forgotPassword({ email: 'a@example.com' });
+    await forgotPassword({ email: 'b@example.com' });
+
+    const [first] = redis.exists.mock.calls[0];
+    const [second] = redis.exists.mock.calls[1];
+    expect(first).not.toBe(second);
+  });
+});
+
+// ── the outage symmetry, which is the whole reason the decoy exists ───────────
+
+describe('forgotPassword — when Redis cannot be reached', () => {
+  const outage = () => new Error('ECONNREFUSED');
+
+  it('answers 503 when the token write fails', async () => {
+    findUnique.mockResolvedValue({ ...RECOVERED });
+    setWithTTL.mockRejectedValueOnce(outage());
+
+    const err = await forgotPassword({ email: RECOVERED.email }).catch(
+      (e) => e,
+    );
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+  });
+
+  it('answers 503 on the NO-ACCOUNT branch too (TRD:1478 + TRD:1480)', async () => {
+    findUnique.mockResolvedValue(null);
+    redis.exists.mockRejectedValueOnce(outage());
+
+    const err = await forgotPassword({ email: 'nobody@example.com' }).catch(
+      (e) => e,
+    );
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+  });
+
+  it('makes the two outage answers indistinguishable', async () => {
+    // The test this whole design exists for. Without the decoy the second call
+    // resolves to undefined while the first throws 503, and the difference is a
+    // one-request account oracle available to anyone who can push Redis over.
+    findUnique.mockResolvedValue({ ...RECOVERED });
+    setWithTTL.mockRejectedValue(outage());
+    redis.exists.mockRejectedValue(outage());
+    const real = await forgotPassword({ email: RECOVERED.email }).catch(
+      (e) => e,
+    );
+
+    findUnique.mockResolvedValue(null);
+    const fake = await forgotPassword({ email: 'nobody@example.com' }).catch(
+      (e) => e,
+    );
+
+    expect(fake.statusCode).toBe(real.statusCode);
+    expect(fake.message).toBe(real.message);
+    expect(fake.constructor).toBe(real.constructor);
+  });
+
+  it('sends no mail when the token could not be stored', async () => {
+    findUnique.mockResolvedValue({ ...RECOVERED });
+    setWithTTL.mockRejectedValueOnce(outage());
+
+    await forgotPassword({ email: RECOVERED.email }).catch(() => {});
+
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
+
+  it('logs the token-write failure at error before converting it', async () => {
+    findUnique.mockResolvedValue({ ...RECOVERED });
+    setWithTTL.mockRejectedValueOnce(outage());
+
+    await forgotPassword({ email: RECOVERED.email }).catch(() => {});
+
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it('still succeeds when only the POINTER write fails', async () => {
+    // Best-effort by design: the pointer costs TRD:1477 for a later token, never
+    // this one, so the reset must go out.
+    findUnique.mockResolvedValue({ ...RECOVERED });
+    setWithTTL.mockImplementationOnce(async (key) => {
+      writeOrder.push(key);
+      return 'OK';
+    });
+    setWithTTL.mockRejectedValueOnce(outage());
+
+    await expect(
+      forgotPassword({ email: RECOVERED.email }),
+    ).resolves.toBeUndefined();
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── superseding the previous token (TRD:1477) ───────────────────────────────
+
+describe('forgotPassword — a second request for the same account', () => {
+  beforeEach(() => {
+    findUnique.mockResolvedValue({ ...RECOVERED });
+  });
+
+  it('unlinks the token key the pointer named', async () => {
+    const previous = resetKeyFor('the-previous-token');
+    redis.getdel.mockResolvedValue(JSON.stringify(previous));
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(redis.getdel).toHaveBeenCalledWith(pointerKeyFor(RECOVERED.id));
+    expect(redis.unlink).toHaveBeenCalledWith(previous);
+  });
+
+  it('supersedes only AFTER the replacement is stored', async () => {
+    // Reversed, a failed write would leave the account with no working token at
+    // all — strictly worse than one that is merely older than it should be.
+    const previous = resetKeyFor('the-previous-token');
+    redis.getdel.mockResolvedValue(JSON.stringify(previous));
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    const token = mailedToken();
+    expect(writeOrder).toEqual([
+      resetKeyFor(token),
+      `UNLINK ${previous}`,
+      pointerKeyFor(RECOVERED.id),
+    ]);
+  });
+
+  it('unlinks nothing when there was no previous token', async () => {
+    redis.getdel.mockResolvedValue(null);
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES to unlink a pointer value that is not a reset key', async () => {
+    // The attack the shape check exists for. UNLINK has no type check — logout's
+    // tests prove it will happily destroy a Set — so a pointer holding a victim's
+    // session index would make this route delete every trace of their live
+    // sessions and leave a ban unable to revoke them.
+    const victimIndex = `session:index:${randomUUID()}`;
+    redis.getdel.mockResolvedValue(JSON.stringify(victimIndex));
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+    // And the reset itself still works — refusing is not failing.
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a pointer that names itself', async () => {
+    redis.getdel.mockResolvedValue(JSON.stringify(pointerKeyFor(RECOVERED.id)));
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('refuses a pointer whose digest is the wrong shape', async () => {
+    // Right prefix, wrong body: 63 hex characters, or non-hex ones.
+    for (const bad of [
+      'reset:pw:' + 'a'.repeat(63),
+      'reset:pw:' + 'g'.repeat(64),
+      'reset:pw:',
+    ]) {
+      vi.clearAllMocks();
+      findUnique.mockResolvedValue({ ...RECOVERED });
+      redis.getdel.mockResolvedValue(JSON.stringify(bad));
+
+      await forgotPassword({ email: RECOVERED.email });
+
+      expect(redis.unlink).not.toHaveBeenCalled();
+    }
+  });
+
+  it('refuses a pointer value that is not JSON at all', async () => {
+    redis.getdel.mockResolvedValue(resetKeyFor('unquoted-and-so-not-json'));
+
+    await forgotPassword({ email: RECOVERED.email });
+
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a supersede that throws, and still issues the new token', async () => {
+    redis.getdel.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(
+      forgotPassword({ email: RECOVERED.email }),
+    ).resolves.toBeUndefined();
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+    expect(logger.child().warn).toHaveBeenCalled();
+  });
+});
+
+// ── reset-password: consuming the token ─────────────────────────────────────
+
+describe('resetPassword — the happy path', () => {
+  const TOKEN_STR = 'a'.repeat(64);
+  const NEW_PASSWORD = 'BrandNewPassword123';
+
+  beforeEach(() => {
+    // JSON, exactly as setWithTTL wrote it — see the header. A test that armed the
+    // bare id would pass while production failed on every link.
+    redis.getdel.mockResolvedValue(JSON.stringify(RECOVERED.id));
+    update.mockResolvedValue({ id: RECOVERED.id });
+  });
+
+  it('consumes the token with GETDEL against the digest key', async () => {
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.getdel).toHaveBeenCalledWith(resetKeyFor(TOKEN_STR));
+  });
+
+  it('JSON-parses the stored id before using it as a where clause', async () => {
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    const [{ where }] = update.mock.calls[0];
+    expect(where).toEqual({ id: RECOVERED.id });
+    // The bug this pins: the quotes surviving into the query.
+    expect(where.id).not.toContain('"');
+  });
+
+  it('hashes the new password at BCRYPT_ROUNDS and writes only that', async () => {
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    expect(bcrypt.hash).toHaveBeenCalledWith(NEW_PASSWORD, BCRYPT_ROUNDS);
+
+    const [{ data, select }] = update.mock.calls[0];
+    expect(Object.keys(data)).toEqual(['passwordHash']);
+    expect(data.passwordHash).toBe(
+      await bcrypt.hash(NEW_PASSWORD, BCRYPT_ROUNDS),
+    );
+    expect(JSON.stringify(data)).not.toContain(NEW_PASSWORD);
+    expect(select).toEqual({ id: true });
+  });
+
+  it('consumes the token BEFORE spending 290 ms on bcrypt', async () => {
+    // The single-use window: a GET-then-delete would leave the whole hash
+    // duration open for a second replay of the same token.
+    let consumedFirst = false;
+    bcrypt.hash.mockImplementationOnce(async (pw, rounds) => {
+      consumedFirst = redis.getdel.mock.calls.length === 1;
+      return `$2a$${rounds}$stub`;
+    });
+
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    expect(consumedFirst).toBe(true);
+  });
+
+  it('reports revokedSessions from UNLINK, not from the member count', async () => {
+    // Measured against redis 7.4.9: three keys passed, two present, returns 2 —
+    // the index is a superset, so counting members over-reports the revocation.
+    const jtis = [randomUUID(), randomUUID(), randomUUID()];
+    redis.smembers.mockResolvedValue(jtis);
+    redis.unlink.mockResolvedValueOnce(2);
+
+    const result = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(result).toEqual({ revokedSessions: 2 });
+    expect(result.revokedSessions).not.toBe(jtis.length);
+  });
+
+  it('unlinks every session key in the index in one command', async () => {
+    const jtis = [randomUUID(), randomUUID()];
+    redis.smembers.mockResolvedValue(jtis);
+
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    expect(redis.smembers).toHaveBeenCalledWith(
+      `session:index:${RECOVERED.id}`,
+    );
+    expect(redis.unlink).toHaveBeenCalledWith(
+      `session:${jtis[0]}`,
+      `session:${jtis[1]}`,
+    );
+  });
+
+  it('changes the password BEFORE revoking, so the old one buys nothing', async () => {
+    // TRD:1476 read strictly. Revoking first leaves an interval in which the old
+    // password still logs in and mints a session the sweep has already passed.
+    //
+    // Sampled at EVERY session-store touch, not at the last one. A single flag
+    // assigned inside the SMEMBERS mock is not enough: measured, a mutant that
+    // revoked early and then swept again late overwrote the flag with the
+    // reassuring value on its second call and survived. Every touch must see the
+    // update already done, so an early one cannot be papered over by a late one.
+    const updatesAtTouch = [];
+    redis.smembers.mockImplementation(async () => {
+      updatesAtTouch.push(update.mock.calls.length);
+      return [randomUUID()];
+    });
+    redis.unlink.mockImplementation(async (...args) => {
+      updatesAtTouch.push(update.mock.calls.length);
+      writeOrder.push(`UNLINK ${args.join(' ')}`);
+      return 0;
+    });
+
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    // toEqual over .every() so a failure prints WHICH touch was early: the diff
+    // reads [0, 1, 1] against [1, 1, 1] rather than false against true.
+    expect(updatesAtTouch).not.toHaveLength(0);
+    expect(updatesAtTouch).toEqual(updatesAtTouch.map(() => 1));
+  });
+
+  it('clears the index Set and the pointer once the sessions are gone', async () => {
+    const jti = randomUUID();
+    redis.smembers.mockResolvedValue([jti]);
+
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    expect(writeOrder).toEqual([
+      `UNLINK session:${jti}`,
+      `UNLINK session:index:${RECOVERED.id} ${pointerKeyFor(RECOVERED.id)}`,
+    ]);
+  });
+
+  it('issues no UNLINK at all for an account with no sessions', async () => {
+    // Measured: UNLINK with no arguments throws "wrong number of arguments", so
+    // the length guard is required rather than defensive — and an empty index is
+    // the ordinary case for an account that never logged in.
+    redis.smembers.mockResolvedValue([]);
+
+    const result = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(result).toEqual({ revokedSessions: 0 });
+    // The only UNLINK is the housekeeping one, which always has two arguments.
+    expect(redis.unlink).toHaveBeenCalledTimes(1);
+    expect(redis.unlink.mock.calls[0]).toHaveLength(2);
+  });
+
+  it('skips an index member that cannot become a key, and revokes the rest', async () => {
+    // A poison pill otherwise: a forged member would fail every future reset for
+    // that account rather than being stepped over once.
+    const good = randomUUID();
+    redis.smembers.mockResolvedValue([good, 'index:someone-else', 'a:b']);
+    redis.unlink.mockResolvedValueOnce(1);
+
+    const result = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(result).toEqual({ revokedSessions: 1 });
+    expect(redis.unlink).toHaveBeenNthCalledWith(1, `session:${good}`);
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives housekeeping that fails, since both keys are already inert', async () => {
+    redis.smembers.mockResolvedValue([randomUUID()]);
+    redis.unlink
+      .mockResolvedValueOnce(1)
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const result = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(result).toEqual({ revokedSessions: 1 });
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── reset-password: every token it will not accept ──────────────────────────
+
+describe('resetPassword — a token it refuses', () => {
+  const NEW_PASSWORD = 'BrandNewPassword123';
+  const expectTokenInvalid = (err) => {
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toBe(MESSAGES.VALIDATION.TOKEN_INVALID);
+    expect(err.isOperational).toBe(true);
+  };
+
+  it('refuses an unknown, expired or already-used token with one 400', async () => {
+    redis.getdel.mockResolvedValue(null);
+
+    const err = await resetPassword({
+      token: 'a'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expectTokenInvalid(err);
+  });
+
+  it('gives the same answer to all three, so a token cannot be probed', async () => {
+    // One message for unknown / expired / consumed is the contract
+    // MESSAGES.VALIDATION.TOKEN_INVALID's own comment fixes. All three arrive
+    // here as the same `null`, which is exactly why they cannot be told apart.
+    redis.getdel.mockResolvedValue(null);
+    const first = await resetPassword({
+      token: 'a'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+    const second = await resetPassword({
+      token: 'b'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(first.message).toBe(second.message);
+    expect(first.statusCode).toBe(second.statusCode);
+  });
+
+  it.each([
+    ['', 'empty'],
+    [null, 'null'],
+    [undefined, 'absent'],
+    [{}, 'an object'],
+  ])('refuses %s (%s) without touching Redis', async (token) => {
+    const err = await resetPassword({ token, newPassword: NEW_PASSWORD }).catch(
+      (e) => e,
+    );
+
+    expectTokenInvalid(err);
+    expect(redis.getdel).not.toHaveBeenCalled();
+    expect(bcrypt.hash).not.toHaveBeenCalled();
+  });
+
+  it('hashes nothing and updates nothing when the token is refused', async () => {
+    redis.getdel.mockResolvedValue(null);
+
+    await resetPassword({
+      token: 'a'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch(() => {});
+
+    expect(bcrypt.hash).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(redis.smembers).not.toHaveBeenCalled();
+  });
+
+  it('answers 503, NOT 400, when GETDEL itself fails', async () => {
+    // The distinction matters: a 400 would tell a user with a perfectly good link
+    // that their link is broken, and they would request another one into the same
+    // outage. TRD:1478 makes reset fail closed.
+    redis.getdel.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await resetPassword({
+      token: 'a'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+    expect(bcrypt.hash).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['not JSON at all', 'raw-user-id-without-quotes'],
+    ['a JSON number', '42'],
+    ['a JSON null', 'null'],
+    ['a JSON object', '{"id":"x"}'],
+    ['an empty JSON string', '""'],
+  ])('refuses a stored value that is %s', async (_label, stored) => {
+    redis.getdel.mockResolvedValue(stored);
+
+    const err = await resetPassword({
+      token: 'a'.repeat(64),
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(update).not.toHaveBeenCalled();
+    // Corruption in a namespace only this module writes — the operator has to see
+    // it even though the caller is told nothing.
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── reset-password: the account, and the sweep that must not be silent ───────
+
+describe('resetPassword — the account and the sweep', () => {
+  const TOKEN_STR = 'a'.repeat(64);
+  const NEW_PASSWORD = 'BrandNewPassword123';
+
+  beforeEach(() => {
+    redis.getdel.mockResolvedValue(JSON.stringify(RECOVERED.id));
+  });
+
+  it('refuses a valid token whose account has been hard-deleted (P2025)', async () => {
+    // Measured: update against an absent id raises P2025 rather than returning
+    // null. Answered as an invalid token, because a distinct message would confirm
+    // the address once belonged to an account.
+    const err = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toBe(MESSAGES.VALIDATION.TOKEN_INVALID);
+    expect(redis.smembers).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a Prisma error that is not P2025 unchanged', async () => {
+    const boom = new Error('connection terminated');
+    boom.code = 'P1001';
+    update.mockRejectedValue(boom);
+
+    const err = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err).toBe(boom);
+    expect(err.statusCode).toBeUndefined();
+  });
+
+  it('answers 503 when the session sweep cannot be completed', async () => {
+    // Fatal here, where the same failure in logout() is a 200: TRD:1476 makes
+    // revocation part of what a reset IS, and the caller is usually someone who
+    // believes they are compromised. Reporting success would tell them the
+    // attacker is gone while the attacker still holds a redeemable token.
+    update.mockResolvedValue({ id: RECOVERED.id });
+    redis.smembers.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 503 when the session UNLINK fails', async () => {
+    update.mockResolvedValue({ id: RECOVERED.id });
+    redis.smembers.mockResolvedValue([randomUUID()]);
+    redis.unlink.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+  });
+
+  it('leaves the password CHANGED when the sweep 503s', async () => {
+    // The 503 reports a partial success truthfully; it does not undo the update,
+    // and it must not, because the token is already spent.
+    update.mockResolvedValue({ id: RECOVERED.id });
+    redis.smembers.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch(() => {});
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(bcrypt.hash).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not rewrite user:state — a password changes none of its fields', async () => {
+    update.mockResolvedValue({ id: RECOVERED.id });
+
+    await resetPassword({ token: TOKEN_STR, newPassword: NEW_PASSWORD });
+
+    const stateWrites = setWithTTL.mock.calls.filter(([key]) =>
+      String(key).startsWith('user:state:'),
+    );
+    expect(stateWrites).toEqual([]);
+  });
+
+  it('takes the account from the token, never from a caller-supplied id', async () => {
+    // The reason the stored value is the only source: an `id` in the payload would
+    // let anyone holding one valid token reset any account.
+    update.mockResolvedValue({ id: RECOVERED.id });
+
+    await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+      userId: 'attacker-chosen-id',
+    });
+
+    expect(update.mock.calls[0][0].where).toEqual({ id: RECOVERED.id });
   });
 });
 
