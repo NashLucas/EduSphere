@@ -385,13 +385,187 @@
 // the rotation. They are task 3.9's, and they are load-bearing enough to name as
 // obligations rather than leave implied:
 //
-//   1. The cookie attributes are exported below as REFRESH_COOKIE so that 3.9 and
-//      3.6 cannot spell them differently — 3.6 must CLEAR the cookie with the same
-//      Path it was set with (plan:347) or the browser keeps the old one.
+//   1. The cookie attributes are exported below as REFRESH_COOKIE so that the
+//      route that SETS the cookie and the route that CLEARS it cannot spell them
+//      differently. Both spellings are 3.9's, because a service with no `res`
+//      cannot emit a Set-Cookie header at all — plan:347 files the clear under
+//      3.6, but only its Redis half can live in a service. logout()'s section of
+//      this header carries the measurements for what the clear has to pass.
 //   2. The Origin/Referer match against CORS_ORIGIN is REQUIRED, and on
 //      /auth/logout too, not only here: TRD:1673 makes those two "the sole
 //      cookie-reading routes" and the match is the CSRF defence that SameSite is
 //      only the first half of. Nothing in this file can enforce that it happens.
+//
+// ═════════════════════════════════════════════════════════════════════════════
+// logout() — task 3.6
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ── LOGOUT HAS EXACTLY ONE ANSWER, AND IT IS 200 ─────────────────────────────
+//
+// apidoc §8.2 gives this endpoint one response row and no failure rows at all:
+// 200, MESSAGES.AUTH.LOGGED_OUT, `data: null`. That is the contract rather than
+// an omission to be filled in with refresh()'s 401 and 503, and every branch
+// below is written to honour it — logout() throws for NO INPUT A CLIENT CAN
+// SEND. (The one exception is jwtConfig()'s missing-secret Error, which is a
+// deployment fault that breaks login() and refresh() identically; swallowing it
+// would leave a logout that silently never revokes anything.)
+//
+// So every case refresh() answers 401 for — no cookie, a signature that does not
+// verify, an expired token, the wrong `type`, an unusable jti — ends the same way
+// here: nothing revoked, the controller clears the cookie, the caller gets 200.
+// Idempotence is what forces that. A client logging out twice, or holding a
+// cookie that expired over the weekend, or already logged out by a ban an hour
+// ago, HAS ALREADY ARRIVED at the state it is asking for. Answering 401 would
+// mean the only way to leave a session is to still be in one.
+//
+// ── WHY A REDIS OUTAGE IS NOT A 503 HERE, WHEN IT IS ON REFRESH ──────────────
+//
+// TRD:1684 states the rule as "fail-closed on security decisions, fail-open on
+// convenience reads", and spells the closed case out as "a session lookup that
+// cannot reach Redis returns HTTP 503 RATHER THAN ADMITTING THE REQUEST".
+// Admitting is the operative word. refresh() and verifyEmail() fail closed
+// because a Redis failure there would hand out something unverifiable — a token
+// pair, a verified flag. Logout hands out nothing, so there is no decision to
+// get wrong and nothing to fail closed on. That is why apidoc lists a 503 for
+// refresh and for verify-email, and none for this route.
+//
+// The stronger argument is what a 503 would DO. The cookie clear lives in the
+// response, so an error thrown from here means the controller never reaches
+// res.clearCookie and THE BROWSER KEEPS A LIVE REFRESH COOKIE. On a shared
+// machine, with Redis down:
+//
+//   503 — the session record survives AND so does the cookie. The next person at
+//         that keyboard POSTs /auth/refresh and is issued a fresh pair.
+//   200 — the session record survives, the cookie is gone. Only someone who
+//         already exfiltrated the cookie can redeem it, which they could have
+//         done before the logout too, and the record expires at 7 days.
+//
+// The 200 is the safer of the two for the person who clicked the button, not a
+// convenience. What it costs is candour about the server-side record, so the
+// failure is logged at ERROR — an operator has to know that revocations are
+// silently not happening — and the return value says `revoked: false` for a
+// caller that cares (Day 13's audit log).
+//
+// ── DELETES GO INDEX-LAST FOR THE SAME REASON WRITES GO INDEX-FIRST ──────────
+//
+// plan:347 orders it "UNLINK session:<jti> → SREM that jti from
+// session:index:<userId>", and that order is load-bearing exactly as login()'s
+// is. The index is specified as a SUPERSET of live sessions (plan:367,
+// TRD:1723): it may list a jti whose session key is already gone, and it must
+// never omit a jti whose session key is live.
+//
+// SREM first would break the second half. If the SREM landed and the UNLINK did
+// not, the session would be live and unlisted — and Day 13's ban, which works by
+// reading the index (plan:373), would MISS IT, leaving the banned account a
+// redeemable refresh token for the remaining life of the key. So the session is
+// destroyed first and the index is told afterwards.
+//
+// Which makes the UNLINK the commit point, and gives the two commands the same
+// asymmetry refresh()'s four writes have:
+//
+//   UNLINK session:<jti>  -- THE COMMIT POINT. On failure: log at error, SKIP
+//                            the SREM, return { revoked: false }. Skipping is
+//                            the point; pruning the index for a session that may
+//                            still be live is precisely the inversion above.
+//   SREM index jti        -- best-effort. Logged at warn, the logout stands. A
+//                            leftover member is inert by specification, and SREM
+//                            of a non-member returns 0 rather than throwing.
+//
+// UNLINK rather than DEL because plan:347 says so and because it is the right
+// command — reclaiming the String happens on a background thread, and this is a
+// user-facing request. Measured against redis 7.4.9: 1 for a live key, 0 for one
+// already gone, 0 for a key that never existed, and no throw in any case. So the
+// idempotence above costs no extra round trip to check existence first, and the
+// return value is what distinguishes "logged out" from "there was nothing to log
+// out of" (the same reasoning plan:367 gives for Day 13's revokedSessions count).
+//
+// ── A FORGED JTI IS MORE DANGEROUS HERE THAN IT IS IN refresh() ──────────────
+//
+// Both functions build the key with keys.session(), which rejects a jti outside
+// /^[A-Za-z0-9._-]+$/ (cache-keys.js:75), and both treat a rejection as a
+// nothing-to-do case rather than an error. But the guard is doing different work
+// in the two places, and here it is doing more.
+//
+// In refresh(), a jti of `index:<victimId>` that got through would make
+// keys.session() emit `session:index:<victimId>` — the victim's index key — and
+// GETDEL against a Set answers WRONGTYPE with the Set intact (line 277). The
+// attack fails on Redis's own type checking.
+//
+// UNLINK HAS NO SUCH TYPE CHECK. Measured: UNLINK on the index Set returns 1 and
+// the Set is gone. The same forged jti here would therefore delete a victim's
+// entire session index, and every session it listed becomes unrevocable — a ban
+// on that account would find an empty set, report zero sessions revoked, and
+// leave every one of them live until it expired. Calling the real key builder
+// instead of interpolating a template string is the whole of the defence.
+//
+// ── THE COOKIE CLEAR, AND THE ONE ATTRIBUTE THAT DECIDES WHETHER IT WORKS ────
+//
+// plan:347's third step — "clear the refresh cookie with the SAME
+// Path=/api/v1/auth attribute it was set with" — is 3.9's to execute, since a
+// service with no `res` cannot set a header. REFRESH_COOKIE above exists so the
+// attributes cannot be spelled differently in the two places, and the call is
+//
+//   res.clearCookie(REFRESH_COOKIE.name, REFRESH_COOKIE.options)
+//
+// Two things about that were measured rather than assumed, because a cookie that
+// fails to clear raises no error anywhere and the bug is invisible until someone
+// notices a "logged out" browser can still refresh.
+//
+// REFRESH_COOKIE.options carries maxAge, and clearCookie() is implemented on top
+// of res.cookie(), which derives `expires` FROM maxAge. Passed through naively
+// that would set the cookie to expire seven days in the FUTURE, clearing
+// nothing. express 5.2.1 deletes it first — `delete opts.maxAge`, with the
+// comment "ensure maxAge is not passed" (express/lib/response.js:720) — and the
+// header measured on this version is `refreshToken=; Path=/api/v1/auth;
+// Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Strict`.
+// Passing the options object whole is safe here by design rather than by luck,
+// and if that express behaviour ever changes this is the note that says what to
+// re-measure.
+//
+// clearCookie's own default is `path: '/'`. Called with no options at all it
+// emits `Path=/`, which does not match the cookie login() set and so does not
+// remove it — also measured. plan:347's insistence on the same Path is not
+// tidiness; it is the difference between a logout that works and one that only
+// looks like it did.
+//
+// ── WHAT LOGOUT CANNOT REVOKE, AND WHY THAT IS NOT A GAP TO CLOSE HERE ───────
+//
+// The access token stays valid until it expires. Nothing in this design recalls
+// it: 3.10's requireAuth verifies the signature and reads user:state:<userId>
+// (plan:351), and neither of those changes when a session key is unlinked. So
+// for up to JWT_ACCESS_EXPIRES_IN after a logout, the Bearer token the client
+// just discarded would still be accepted if it were replayed.
+//
+// That is the trade plan:369 makes deliberately — a per-request session lookup is
+// the cost the user:state fast path exists to avoid — and 15 minutes is the
+// number chosen to bound it (plan:370). Closing it in logout() would mean a jti
+// denylist consulted on every authenticated request, which is the same
+// per-request read in a different coat. It is named here because plan:383's
+// "register → verify email → login → protected route → refresh → logout" reads
+// as though logout ends everything, and the honest statement is that it ends the
+// ability to OBTAIN a new access token.
+//
+// Nor does logout touch user:state. Ending a session changes none of `role`,
+// `isBanned`, `isEmailVerified` or `deletedAt`, so rewriting that record would
+// only reset a TTL for nothing.
+//
+// And it revokes ONE session. apidoc §8.2 is explicit — "Unlinks session:<jti>"
+// — so a phone stays signed in when a laptop signs out. The all-sessions
+// operation exists and belongs to the tasks that need it: password reset (3.7)
+// and ban (Day 13), both through SMEMBERS on the index set.
+//
+// ── WHAT logout() LEAVES TO TASK 3.9 ─────────────────────────────────────────
+//
+// The cookie clear above, and the Origin/Referer match against CORS_ORIGIN that
+// TRD:1673 requires on this route as much as on /auth/refresh — those two being
+// "the sole cookie-reading routes", with SameSite=Strict only the first half of
+// the CSRF defence. A forced cross-site logout is a nuisance rather than a
+// breach, but it is a nuisance the contract says to prevent.
+//
+// This function also does not check that the caller is authenticated. apidoc
+// §8.2 guards the route as Authenticated and 3.10's requireAuth is what enforces
+// it; what arrives here is `req.user.id`, and the only thing logout() does with
+// it is refuse to revoke a session that belongs to someone else.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -1167,4 +1341,143 @@ export async function refresh(token, { ip, userAgent } = {}) {
   return { accessToken, refreshToken };
 }
 
-export default { register, generateToken, login, refresh, REFRESH_COOKIE };
+/**
+ * Ends one session: revokes its refresh token and prunes the index — plan:347,
+ * apidoc §8.2.
+ *
+ * Throws for no input a client can send. apidoc §8.2 gives logout a single 200
+ * response and no failure rows, so everything refresh() answers 401 for, and the
+ * Redis outage it answers 503 for, resolve here as "nothing revoked" plus a log
+ * line. logout()'s section of the header has the argument for why a 503 would
+ * leave the caller strictly worse off than the 200 does. The one thing that can
+ * still propagate is jwtConfig()'s missing-secret Error, which is a deployment
+ * fault rather than a request.
+ *
+ * Reads the jti from the refresh COOKIE, not from the access token — the pair get
+ * separate jtis and `session:<jti>` is keyed by the refresh half (login()'s
+ * header, "TWO KEYS, TWO JTIS"), so the access token cannot name the session it
+ * belongs to. That is what makes this one of the two cookie-reading routes
+ * TRD:1673 names, and why 3.9 owes it an Origin/Referer check.
+ *
+ * @param {string} [token] The refresh token from `req.cookies`, or undefined when
+ *        the cookie is absent — a logout with no session to end is a success.
+ * @param {{userId?: string}} [context] `req.user.id` from requireAuth (3.10);
+ *        apidoc §8.2 guards this route as Authenticated. Compared against the
+ *        cookie's `sub` so a caller cannot end someone else's session by
+ *        presenting someone else's cookie.
+ * @returns {Promise<{revoked: boolean}>} whether a live session was actually
+ *          destroyed. The controller discards it, since apidoc's `data` is null,
+ *          but it separates "logged out" from "there was nothing to log out of"
+ *          — which Day 13's audit log will want, and which is the only signal a
+ *          caller gets that Redis was unreachable.
+ */
+export async function logout(token, { userId } = {}) {
+  const { refreshSecret } = jwtConfig();
+
+  // The ordinary double-logout, and any client that never held a cookie. Nothing
+  // to do and nothing wrong, so deliberately not logged at any level.
+  if (!token) {
+    return { revoked: false };
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, refreshSecret, {
+      algorithms: [JWT_ALGORITHM],
+    });
+  } catch {
+    // Expiry is the common arrival here and it is benign: a token's lifetime and
+    // its session key's TTL are set from the same moment, so a token that has
+    // expired names a key that has too. Strict verification rather than
+    // `ignoreExpiration`, deliberately — the two cookie-reading routes should not
+    // disagree about what a valid cookie is, and the only session an expired
+    // token could still name is one no refresh() will ever accept again.
+    return { revoked: false };
+  }
+
+  // Symmetric with refresh(): a token signed with the refresh key but minted for
+  // another purpose does not get to name a session.
+  if (payload.type !== TOKEN_TYPE.REFRESH) {
+    return { revoked: false };
+  }
+
+  if (typeof payload.jti !== 'string' || typeof payload.sub !== 'string') {
+    return { revoked: false };
+  }
+
+  // Authentic says nothing about WHOSE. Both keys below are derived from the
+  // AUTHENTICATED caller, so this comparison is what stops a Bearer token for one
+  // account plus a refresh cookie for another from revoking the second account's
+  // session — a free denial of service on anyone whose cookie ever leaked. The
+  // benign version is a client that kept a stale access token across a re-login;
+  // it gets the same answer, which is to revoke nothing.
+  //
+  // A `userId` the controller forgot to pass lands here too, and reads in the log
+  // as the undefined it is rather than silently matching something.
+  if (payload.sub !== userId) {
+    log.warn(
+      { userId, cookieSubject: payload.sub },
+      '[auth] logout: cookie subject is not the authenticated caller — nothing revoked',
+    );
+    return { revoked: false };
+  }
+
+  // Built through the real key builder, in its own guard. This is the check that
+  // stops a crafted `index:<victimId>` jti from becoming `session:index:<victimId>`
+  // and reaching UNLINK, which — unlike refresh()'s GETDEL — would DELETE the Set
+  // rather than refuse it on type (measured; see the header).
+  let sessionKey;
+  try {
+    sessionKey = keys.session(payload.jti);
+  } catch {
+    log.warn(
+      { userId },
+      '[auth] logout: cookie carries an unusable jti — nothing revoked',
+    );
+    return { revoked: false };
+  }
+
+  // ── The commit point. Session first, index second ───────────────────────────
+  let unlinked;
+  try {
+    unlinked = await redis.unlink(sessionKey);
+  } catch (err) {
+    // NOT a 503, and the SREM below is NOT attempted — both deliberate, both
+    // argued in the header. Error level because a revocation that did not happen
+    // is an operator's problem even though it is not the caller's.
+    log.error(
+      { err, userId },
+      '[auth] logout: session unlink failed — session NOT revoked, cookie still cleared',
+    );
+    return { revoked: false };
+  }
+
+  // 0 means there was nothing to remove: expired on its own, revoked by a ban, or
+  // a second logout. Measured — UNLINK returns the number of keys removed and does
+  // not throw on a miss — so no existence check is needed to tell the two apart.
+  const revoked = unlinked > 0;
+
+  // Housekeeping, and safe either way. If the key was live it is gone now; if it
+  // was already gone, this is the opportunistic prune TRD:1723 describes. The
+  // index key is derived from the authenticated caller, so a malformed id throws
+  // out of keys.sessionIndex() into this catch rather than past it.
+  try {
+    await redis.srem(keys.sessionIndex(userId), payload.jti);
+  } catch (err) {
+    log.warn(
+      { err, userId },
+      '[auth] logout: index entry not pruned — inert, session already unlinked',
+    );
+  }
+
+  return { revoked };
+}
+
+export default {
+  register,
+  generateToken,
+  login,
+  refresh,
+  logout,
+  REFRESH_COOKIE,
+};

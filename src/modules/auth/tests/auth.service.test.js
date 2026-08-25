@@ -2,7 +2,8 @@
 // Auth service unit tests — plan:179 and plan:1032 ("service-layer unit tests
 // are written in the module's tests/ folder the same day the service lands").
 // Task 3.3 is the first service to land, so this is the first such file; 3.4 adds
-// the login() blocks below register()'s, and 3.5 the refresh() blocks below those.
+// the login() blocks below register()'s, 3.5 the refresh() blocks below those, and
+// 3.6 the logout() blocks below those.
 //
 // These are UNIT tests: PostgreSQL and the Redis write are mocked, so the suite
 // runs with no Docker and no .env. That boundary is deliberate rather than
@@ -40,6 +41,13 @@
 // provided", and the `typeof payload.jti` check duplicates keys.session()'s
 // rejection of a non-string. Both are explicitness, not behaviour, so no test here
 // can distinguish their presence — which is the honest reason there isn't one.
+//
+// The final block is the one exception to the mocking boundary above: it stands up
+// a two-line express app to assert that REFRESH_COOKIE.options can be handed to
+// res.clearCookie whole. That is a claim about express rather than about this
+// service, and it is pinned here because logout()'s header depends on it, because
+// both ways it can break are SILENT, and because 3.9 — which will own the real
+// assertion — does not exist yet.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -132,18 +140,21 @@ vi.mock('bcryptjs', async () => {
   };
 });
 
-// SADD, GETDEL and SREM are the Redis commands this module issues directly;
-// everything else goes through cache-keys.js, whose setWithTTL is mocked below.
-// Importing the real client would be harmless (lazyConnect opens no socket) but
-// would leave the index write and the rotation gate unobservable.
+// SADD, GETDEL, UNLINK and SREM are the Redis commands this module issues
+// directly; everything else goes through cache-keys.js, whose setWithTTL is
+// mocked below. Importing the real client would be harmless (lazyConnect opens no
+// socket) but would leave the index write, the rotation gate and the logout
+// revocation unobservable.
 //
-// `getdel` defaults to null — an ABSENT session — so a refresh test that forgets
-// to arm a live session fails as an unauthenticated one rather than passing on a
-// mock's convenient truthiness.
+// `getdel` and `unlink` both default to the ABSENT answer — null and 0 — so a
+// test that forgets to arm a live session fails as an unauthenticated one, or
+// reports `revoked: false`, rather than passing on a mock's convenient
+// truthiness.
 vi.mock('../../../config/redis.js', () => {
   const client = {
     sadd: vi.fn(async () => 1),
     getdel: vi.fn(async () => null),
+    unlink: vi.fn(async () => 0),
     srem: vi.fn(async () => 1),
   };
   return { redis: client, default: client };
@@ -169,7 +180,7 @@ const { setWithTTL } = await import('../../../utils/cache-keys.js');
 const { sendVerificationEmail } =
   await import('../../../integrations/email/index.js');
 const { logger } = await import('../../../middlewares/logging.middleware.js');
-const { register, generateToken, login, refresh, REFRESH_COOKIE } =
+const { register, generateToken, login, refresh, logout, REFRESH_COOKIE } =
   await import('../auth.service.js');
 
 const VALID = Object.freeze({
@@ -205,6 +216,12 @@ beforeEach(() => {
   redis.srem.mockImplementation(async (key) => {
     writeOrder.push(`SREM ${key}`);
     return 1;
+  });
+  // Labelled for the same reason, and defaulting to 0 — nothing removed — so a
+  // logout test has to say so explicitly to claim a session was revoked.
+  redis.unlink.mockImplementation(async (key) => {
+    writeOrder.push(`UNLINK ${key}`);
+    return 0;
   });
   // Absent by default: a refresh test that forgets to arm a session fails as an
   // unauthenticated one rather than passing on a mock's convenient truthiness.
@@ -1658,5 +1675,487 @@ describe('REFRESH_COOKIE', () => {
       process.env.NODE_ENV = original;
       vi.resetModules();
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// logout() — task 3.6
+//
+// The shape of these blocks differs from refresh()'s for one reason: logout has
+// no failure response to assert. apidoc §8.2 gives it a single 200 and no error
+// rows, so where a refresh test catches a thrown AppError and reads its
+// statusCode, a logout test reads a RESOLVED `{ revoked }` and then asks what
+// Redis was and was not told. "Did not throw" is therefore an assertion in its
+// own right here, and the first block makes it explicitly rather than relying on
+// an unhandled rejection to fail the run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A live session for logout: a cookie whose sub is the caller, and a hit. */
+function givenLiveSession({ userId = ACCOUNT.id, jti = randomUUID() } = {}) {
+  const token = signRefresh({ sub: userId, jti });
+  redis.unlink.mockImplementation(async (key) => {
+    writeOrder.push(`UNLINK ${key}`);
+    return 1;
+  });
+  return { token, jti };
+}
+
+/**
+ * A refresh token that verified correctly a second ago and no longer does.
+ *
+ * Not signRefresh({ expiresIn }) — that helper spreads its extras into the
+ * PAYLOAD, so `expiresIn` there would be an inert custom claim on a token with a
+ * full seven days left, and every assertion about expiry would pass for the
+ * wrong reason.
+ */
+function signExpiredRefresh() {
+  return jwt.sign({ sub: ACCOUNT.id, type: 'refresh' }, REFRESH_SECRET, {
+    expiresIn: '-1s',
+    jwtid: randomUUID(),
+  });
+}
+
+// ── every cookie it will not act on, and the fact that none of them fail ─────
+
+describe('logout — nothing to revoke', () => {
+  it('resolves for an absent cookie, touching Redis not at all', async () => {
+    const result = await logout(undefined, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(redis.srem).not.toHaveBeenCalled();
+    // A double logout is the ordinary case, not an incident. Logging it would put
+    // a line in the security log for every client that clicked twice.
+    expect(logger.child().warn).not.toHaveBeenCalled();
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('NEVER THROWS, for any cookie a client could send', async () => {
+    // apidoc §8.2's contract in one assertion. Each of these is a case refresh()
+    // answers 401 for; every one of them has to resolve here instead, and resolve
+    // to the same thing, or the endpoint has a failure mode its documentation
+    // does not admit to.
+    const cases = [
+      ['no cookie at all', undefined],
+      ['an empty-string cookie', ''],
+      ['junk that is not a JWT', 'not-a-jwt'],
+      [
+        'a token signed with the ACCESS key',
+        jwt.sign({ sub: ACCOUNT.id, type: 'refresh' }, ACCESS_SECRET, {
+          expiresIn: '7d',
+          jwtid: randomUUID(),
+        }),
+      ],
+      [
+        'a token signed with neither key',
+        jwt.sign(
+          { sub: ACCOUNT.id, type: 'refresh' },
+          'a-third-secret-entirely',
+          {
+            expiresIn: '7d',
+            jwtid: randomUUID(),
+          },
+        ),
+      ],
+      ['an expired refresh token', signExpiredRefresh()],
+      ["a `type` claim of 'access'", signRefresh({ type: 'access' })],
+      ['no `type` claim at all', signRefresh({ type: undefined })],
+      [
+        'no jti',
+        jwt.sign({ sub: ACCOUNT.id, type: 'refresh' }, REFRESH_SECRET),
+      ],
+      ['a non-string sub', signRefresh({ sub: 12345 })],
+      ["a jti carrying ':'", signRefresh({ jti: `index:${ACCOUNT.id}` })],
+      [
+        'a cookie belonging to someone else',
+        signRefresh({ sub: 'another-user' }),
+      ],
+    ];
+
+    const outcomes = {};
+    for (const [label, token] of cases) {
+      // Deliberately NOT wrapped in .catch() — a rejection here fails the test
+      // by escaping, which is the behaviour being asserted.
+      outcomes[label] = await logout(token, { userId: ACCOUNT.id });
+    }
+
+    expect(outcomes).toEqual(
+      Object.fromEntries(cases.map(([label]) => [label, { revoked: false }])),
+    );
+  });
+
+  it('does not reach Redis for a token it cannot verify', async () => {
+    await logout('not-a-jwt', { userId: ACCOUNT.id });
+    await logout(signExpiredRefresh(), { userId: ACCOUNT.id });
+
+    // An expired cookie names an expired key: TTL.session and the token lifetime
+    // are set from the same moment, so there is nothing there to unlink. Strict
+    // verification rather than ignoreExpiration, and this is what pins it.
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token signed with the refresh key but minted as an access one', async () => {
+    const result = await logout(signRefresh({ type: 'access' }), {
+      userId: ACCOUNT.id,
+    });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('verifies against the REFRESH key, so an access token revokes nothing', async () => {
+    // The NEVER THROWS table covers this case too, but only asserts the returned
+    // value — and the unlink mock answers 0 by default, so that assertion would
+    // still pass if the service verified with the wrong secret. This is the one
+    // that would not: an accepted token reaches UNLINK.
+    const accessToken = jwt.sign(
+      {
+        sub: ACCOUNT.id,
+        email: ACCOUNT.email,
+        role: ACCOUNT.role,
+        type: 'access',
+      },
+      ACCESS_SECRET,
+      { expiresIn: '15m', jwtid: randomUUID() },
+    );
+
+    await logout(accessToken, { userId: ACCOUNT.id });
+
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('refuses HS512 signed with the right secret — the algorithms pin', async () => {
+    // Same pin refresh() carries, for the same reason: without `algorithms`,
+    // jsonwebtoken accepts whatever `alg` the header claims as long as the MAC
+    // checks out, and the header is attacker-controlled. Measured in 3.5 —
+    // HS512 with the correct secret is ACCEPTED without the pin.
+    const hs512 = jwt.sign(
+      { sub: ACCOUNT.id, type: 'refresh' },
+      REFRESH_SECRET,
+      {
+        algorithm: 'HS512',
+        expiresIn: '7d',
+        jwtid: randomUUID(),
+      },
+    );
+
+    const result = await logout(hs512, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('touches neither PostgreSQL nor user:state on any path', async () => {
+    givenLiveSession();
+    const { token } = givenLiveSession();
+    await logout(token, { userId: ACCOUNT.id });
+
+    // Ending a session changes no account field, so there is nothing to re-read
+    // and nothing to re-cache. A user:state write here would only reset a TTL.
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+});
+
+// ── a cookie that is authentic but not the caller's ──────────────────────────
+
+describe('logout — someone else’s cookie', () => {
+  it('revokes nothing when the cookie subject is not the caller', async () => {
+    // Authentic — signed with the real refresh key — and still refused. Without
+    // this comparison, a Bearer token for one account plus a leaked cookie for
+    // another is a free way to end the second account's session.
+    const victimToken = signRefresh({ sub: 'victim-user-id' });
+
+    const result = await logout(victimToken, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(redis.srem).not.toHaveBeenCalled();
+  });
+
+  it('logs the mismatch at warn, with both identities', async () => {
+    await logout(signRefresh({ sub: 'victim-user-id' }), {
+      userId: ACCOUNT.id,
+    });
+
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    const [context] = logger.child().warn.mock.calls[0];
+    expect(context.userId).toBe(ACCOUNT.id);
+    expect(context.cookieSubject).toBe('victim-user-id');
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('revokes nothing when the controller forgot to pass a userId', async () => {
+    // Lands in the same guard, which is why it is safe: a missing caller identity
+    // cannot match any cookie, so the failure mode of forgetting it is "logout
+    // stops working", not "logout revokes the wrong session".
+    const result = await logout(signRefresh(), {});
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+    const [context] = logger.child().warn.mock.calls[0];
+    expect(context.userId).toBeUndefined();
+  });
+
+  it('revokes nothing when called with no context object at all', async () => {
+    const result = await logout(signRefresh());
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+});
+
+// ── the forged jti, which UNLINK would honour where GETDEL refused it ────────
+
+describe('logout — a jti that would name another key', () => {
+  it('never lets a crafted jti reach UNLINK', async () => {
+    // THE one in this block that matters. keys.session('index:<id>') would emit
+    // `session:index:<id>` — the victim's index key — and UNLINK, unlike
+    // refresh()'s GETDEL, does not refuse a Set: measured against redis 7.4.9, it
+    // returns 1 and the Set is gone. Every session it listed would then be
+    // unrevocable, so a ban on that account finds an empty set and reports zero.
+    const forged = signRefresh({ jti: `index:${ACCOUNT.id}` });
+
+    const result = await logout(forged, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(redis.unlink).not.toHaveBeenCalledWith(INDEX_KEY);
+    expect(redis.srem).not.toHaveBeenCalled();
+  });
+
+  it('refuses every jti outside the cache-keys character class', async () => {
+    for (const jti of ['index:x', 'a b', 'a*', 'sess:ion', '']) {
+      const result = await logout(signRefresh({ jti }), {
+        userId: ACCOUNT.id,
+      });
+      expect(result).toEqual({ revoked: false });
+    }
+    expect(redis.unlink).not.toHaveBeenCalled();
+  });
+
+  it('logs the unusable jti at warn, without echoing it', async () => {
+    await logout(signRefresh({ jti: `index:${ACCOUNT.id}` }), {
+      userId: ACCOUNT.id,
+    });
+
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    const [context, message] = logger.child().warn.mock.calls[0];
+    expect(context.userId).toBe(ACCOUNT.id);
+    expect(message).toMatch(/unusable jti/);
+  });
+});
+
+// ── the revocation itself (plan:347, apidoc:290) ─────────────────────────────
+
+describe('logout — the revocation', () => {
+  it('unlinks exactly session:<jti> from the cookie', async () => {
+    const { token, jti } = givenLiveSession();
+
+    const result = await logout(token, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: true });
+    expect(redis.unlink).toHaveBeenCalledTimes(1);
+    expect(redis.unlink).toHaveBeenCalledWith(`session:${jti}`);
+  });
+
+  it('prunes that jti from session:index:<userId>, and only that jti', async () => {
+    const { token, jti } = givenLiveSession();
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    expect(redis.srem).toHaveBeenCalledTimes(1);
+    expect(redis.srem).toHaveBeenCalledWith(INDEX_KEY, jti);
+  });
+
+  it('UNLINKS BEFORE it prunes, never the other way round', async () => {
+    // The invariant, and the reason plan:347 states this order. The index is a
+    // superset of live sessions (plan:367, TRD:1723): it may list a dead jti but
+    // must never omit a live one. SREM first plus a failed UNLINK leaves a live
+    // session that no ban can find, because Day 13 works from the index.
+    const { token, jti } = givenLiveSession();
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    expect(writeOrder).toEqual([`UNLINK session:${jti}`, `SREM ${INDEX_KEY}`]);
+  });
+
+  it('reports revoked: false when the key was already gone', async () => {
+    // UNLINK returns the number of keys removed, so 0 is "expired on its own, or
+    // revoked by a ban, or a second logout" — a success with nothing in it. The
+    // mock's default is 0 precisely so this is the case a test has to opt out of.
+    const token = signRefresh({ sub: ACCOUNT.id });
+
+    const result = await logout(token, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.unlink).toHaveBeenCalledTimes(1);
+  });
+
+  it('still prunes the index when the session key was already gone', async () => {
+    // The opportunistic cleanup TRD:1723 describes. Nothing was revoked, but the
+    // dead member is exactly what the index accumulates and what inflates Day
+    // 13's revoked-session count if it is never removed.
+    const { token, jti } = givenLiveSession();
+    redis.unlink.mockImplementation(async (key) => {
+      writeOrder.push(`UNLINK ${key}`);
+      return 0;
+    });
+
+    const result = await logout(token, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+    expect(redis.srem).toHaveBeenCalledWith(INDEX_KEY, jti);
+  });
+
+  it('revokes ONE session, not every session the user holds', async () => {
+    // apidoc §8.2 is "Unlinks session:<jti>", singular — a phone stays signed in
+    // when a laptop signs out. The all-sessions operation is 3.7's and Day 13's,
+    // and it works by SMEMBERS on the index, which is never read here.
+    const { token } = givenLiveSession();
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    expect(redis.unlink).toHaveBeenCalledTimes(1);
+    expect(redis.smembers).toBeUndefined();
+    expect(redis.unlink).not.toHaveBeenCalledWith(INDEX_KEY);
+  });
+
+  it('logs nothing at all on a successful revocation', async () => {
+    const { token } = givenLiveSession();
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    // The module logs only failures — there is no log.info anywhere in it — so a
+    // line here would be a new convention arriving by accident.
+    expect(logger.child().warn).not.toHaveBeenCalled();
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+});
+
+// ── Redis unreachable: the 503 that deliberately is not one ──────────────────
+
+describe('logout — when Redis cannot be reached', () => {
+  it('does NOT answer 503, unlike refresh', async () => {
+    // The deliberate divergence from TRD §7.1's fail-closed rule, which is about
+    // reads that ADMIT a request (TRD:1684). Logout admits nothing. And a thrown
+    // error would stop the controller reaching res.clearCookie, leaving the
+    // browser holding a live cookie — strictly worse than a stale server record.
+    const { token } = givenLiveSession();
+    redis.unlink.mockRejectedValue(new Error('READONLY'));
+
+    const result = await logout(token, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: false });
+  });
+
+  it('does not prune the index when the unlink failed', async () => {
+    // The load-bearing half. Pruning a jti whose session may still be live is
+    // the exact inversion of the superset invariant: the session would be live
+    // and unlisted, so a ban would never find it.
+    const { token } = givenLiveSession();
+    redis.unlink.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    expect(redis.srem).not.toHaveBeenCalled();
+    expect(writeOrder).toEqual([]);
+  });
+
+  it('logs the failed unlink at ERROR, not warn', async () => {
+    // An operator has to know that revocations are silently not happening. This
+    // is the one failure in logout that is nobody's fault but the platform's.
+    const { token } = givenLiveSession();
+    const boom = new Error('ECONNREFUSED');
+    redis.unlink.mockRejectedValue(boom);
+
+    await logout(token, { userId: ACCOUNT.id });
+
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+    const [context, message] = logger.child().error.mock.calls[0];
+    expect(context.err).toBe(boom);
+    expect(context.userId).toBe(ACCOUNT.id);
+    expect(message).toMatch(/NOT revoked/);
+    expect(logger.child().warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps revoked: true when only the index prune failed', async () => {
+    // Past the commit point. The session IS gone; a leftover index member is
+    // inert by specification (plan:367) and SREM of a non-member returns 0 rather
+    // than throwing, so the next rotation's cleanup is a no-op either way.
+    const { token } = givenLiveSession();
+    redis.srem.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const result = await logout(token, { userId: ACCOUNT.id });
+
+    expect(result).toEqual({ revoked: true });
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('survives a malformed userId reaching the index key builder', async () => {
+    // keys.sessionIndex() throws on a userId outside its character class, and it
+    // is evaluated INSIDE the try — so the throw lands in the warn rather than
+    // escaping past a revocation that already happened.
+    const token = signRefresh({ sub: 'bad:user:id' });
+    redis.unlink.mockResolvedValue(1);
+
+    const result = await logout(token, { userId: 'bad:user:id' });
+
+    expect(result).toEqual({ revoked: true });
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── the cookie clear 3.9 owes plan:347 ──────────────────────────────────────
+
+describe('the refresh cookie can actually be cleared', () => {
+  // Not a test of this service — logout() has no `res`. It pins the two
+  // assumptions logout()'s header makes about express, because both fail
+  // SILENTLY: a cookie that is not cleared raises no error anywhere, and the bug
+  // surfaces only as a "logged out" browser that can still refresh. 3.9 will own
+  // the real assertion; until it exists, these are what would catch an express
+  // upgrade that changed clearCookie's handling of maxAge or of Path.
+  const emitted = async (handler) => {
+    const express = (await import('express')).default;
+    const request = (await import('supertest')).default;
+    const app = express();
+    app.post('/t', (_req, res) => {
+      handler(res);
+      res.status(204).end();
+    });
+    const res = await request(app).post('/t');
+    return res.headers['set-cookie'][0];
+  };
+
+  it('expires in the PAST even though REFRESH_COOKIE.options carries maxAge', async () => {
+    // clearCookie is built on res.cookie, which derives `expires` FROM maxAge. If
+    // express stopped deleting it first, this call would set a cookie expiring
+    // seven days in the future and clear nothing at all.
+    const header = await emitted((res) =>
+      res.clearCookie(REFRESH_COOKIE.name, REFRESH_COOKIE.options),
+    );
+
+    const expires = new Date(/Expires=([^;]+)/.exec(header)[1]);
+    expect(expires.getTime()).toBeLessThan(Date.now());
+    expect(header).not.toMatch(/Max-Age/i);
+    expect(header).toMatch(/^refreshToken=;/);
+  });
+
+  it('keeps the Path that identifies the cookie, which the default would lose', async () => {
+    // plan:347's "the SAME Path=/api/v1/auth attribute it was set with". A cookie
+    // is identified by name plus Path plus Domain, so clearCookie's own default of
+    // '/' does not match the one login() set and does not remove it.
+    const withOptions = await emitted((res) =>
+      res.clearCookie(REFRESH_COOKIE.name, REFRESH_COOKIE.options),
+    );
+    const withoutOptions = await emitted((res) =>
+      res.clearCookie(REFRESH_COOKIE.name),
+    );
+
+    expect(withOptions).toMatch(/Path=\/api\/v1\/auth/);
+    expect(withOptions).toMatch(/HttpOnly/);
+    expect(withOptions).toMatch(/SameSite=Strict/);
+    expect(withoutOptions).toMatch(/Path=\/;/);
+    expect(withoutOptions).not.toMatch(/api\/v1\/auth/);
   });
 });
