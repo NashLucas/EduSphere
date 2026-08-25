@@ -142,6 +142,19 @@ export const MESSAGES = Object.freeze({
     // "Changed" rather than "reset" — the reader just chose the new password, so
     // "reset" invites the question of what it was reset TO.
     PASSWORD_RESET: 'Your password has been changed. Please sign in again.',
+    // authored — task 3.8. POST /auth/verify-email, apidoc §8.2's 200 row, which
+    // says only "Email address marked verified" and pins no wording.
+    //
+    // Stated as a completed fact and nothing else. It deliberately does not say
+    // "thank you for confirming" or "you can now enrol", because this one string
+    // is also the answer to a REPLAY: verification is idempotent, so a token that
+    // arrives after the flag is already true earns the same 200, and a message
+    // that reads as a first-time welcome would be wrong on that path.
+    //
+    // Nor does it list what verification unlocks. TRD:1482 gates exactly three
+    // surfaces on the flag, and 3.11 owns which ones; naming them here would put
+    // a second, drifting copy of that list in front of the user.
+    EMAIL_VERIFIED: 'Your email address has been verified.',
   }),
 
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong

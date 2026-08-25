@@ -754,6 +754,121 @@
 // `revokedSessions` to the client — it is returned here for the audit log Day 13
 // wants, and a count of the account's devices is not something the response needs
 // to carry.
+//
+// ── 3.8: WHY VERIFY CONSUMES ITS TOKEN LAST AND RESET CONSUMES IT FIRST ──────
+//
+// resetPassword() above opens with GETDEL, so the token is spent before anything
+// else can fail. verifyEmail() below opens with a plain GET and UNLINKs only
+// after the row is committed. That is the opposite order, it is deliberate, and
+// plan:348 and plan:349 already draw the distinction — 348 says to UNLINK "before
+// accepting the new password", 349 says to GET, set the flag, and then UNLINK.
+//
+// The reason is the resend endpoint that does not exist. As line 21 records, the
+// string "resend" appears nowhere in EduTRD.md, docs/apidoc.md or
+// IMPLEMENTATION_PLAN.md, and TRD §6.1 lists registering as the only way to
+// obtain a verification token. So the two tokens have completely different costs
+// when one is destroyed by a failure that follows it:
+//
+//   a lost RESET token   — the user asks for another. forgotPassword() is a live
+//                          endpoint and issuing a replacement is its whole job.
+//   a lost VERIFY token  — the account is unverifiable forever. TRD:1482 then
+//                          refuses POST /enrollments, POST /courses and every
+//                          quiz submission for the life of the account, and
+//                          re-registering the address is register()'s 409.
+//
+// GETDEL here would mean a PostgreSQL outage in the millisecond after the read
+// costs the caller their only token and answers 503 — technically truthful, and
+// permanently unrecoverable. GET-then-UNLINK inverts which side the failure lands
+// on: if the UNLINK is what fails, the token survives to its 24 h TTL and can be
+// replayed, and a replay re-sets a flag that is already true. That is the failure
+// worth having.
+//
+// It costs strict single-use inside one window: two requests carrying the same
+// token can both pass the GET before either UNLINKs. Both then set the same flag
+// to the same value and both answer 200, so the observable outcome is identical to
+// one request — the operation is idempotent, which is what makes the window safe
+// rather than merely narrow. UNLINK's return value distinguishes the two: measured,
+// 1 when this request removed the key and 0 when something else already had, so the
+// raced case is logged rather than guessed at.
+//
+// ── ONE WRITE ANSWERS THREE QUESTIONS ────────────────────────────────────────
+//
+// `update({ where: { id: userId, deletedAt: null } })` was measured against
+// Prisma 6.19 rather than assumed, because a non-unique filter in an update's
+// where-clause is a comparatively recent capability and silently ignoring it would
+// have been the worst outcome. It is accepted; it raises P2025 when the row is
+// soft-deleted AND when no such row exists, leaving the flag untouched in both
+// cases; and `select` still returns the row. So one statement covers:
+//
+//   1. the account exists            — else P2025
+//   2. it is not soft-deleted        — else P2025, verified by leaving the flag false
+//   3. the record user:state needs   — role, isBanned, isEmailVerified, deletedAt
+//
+// Case 1 is the residual line 45 named for this task: register() writes the token
+// inside the transaction, so a Redis write that survives a failed COMMIT leaves a
+// token pointing at a userId that was rolled back. That is a 400, not an
+// impossible state, and this is where it is answered.
+//
+// A THIRD Prisma error code turned up in the same measurement and is the reason
+// the catch below is not a copy of resetPassword()'s. An id that is not a UUID
+// raises P2023 ("Inconsistent column data: Error creating UUID"), not P2025. The
+// `typeof userId === 'string'` guard does not exclude it — "not-a-uuid" is a
+// perfectly good non-empty string — so without a P2023 branch a corrupted value in
+// this keyspace answers 500 instead of 400. resetPassword() had exactly that gap
+// and has been given the same branch; see the note in this commit.
+//
+// ── WHY THE user:state REWRITE IS BEST-EFFORT ────────────────────────────────
+//
+// plan:349 asks for the rewrite so requireVerifiedEmail sees the new flag at once
+// instead of up to TTL.userState later, and plan:376 lists login, ban/unban and
+// role change as that key's writers — this is a fourth, added by the same plan
+// line that asks for it.
+//
+// It warns rather than throwing, and the asymmetry with login() is the same one
+// argued at line 365. The flag is already committed in PostgreSQL by the time this
+// runs, so a failure here loses freshness, not truth: a missing record is a
+// defined fallthrough to Postgres, and a stale one reads `isEmailVerified: false`
+// and gates the user for up to 15 more minutes. Both are MORE restrictive than the
+// truth, never less, so neither is a security failure. Answering 503 instead would
+// tell the caller verification failed when it has already succeeded, and send them
+// back with a token this request consumed — a 400 on the retry, for an account
+// that is in fact verified.
+//
+// UNLINKing the key instead of rewriting it would also give immediate visibility,
+// by way of the Postgres fallthrough, and was rejected because it spends a
+// round-trip per request afterwards to re-derive something this call already holds.
+//
+// The write is the full four-field record from plan:358, not a merge into whatever
+// is there. That loses a ban committed in the ~1 ms between the update returning
+// and this SET landing — but login() and refresh() write the same record the same
+// way, so the window is the existing pattern's rather than this function's, and
+// narrowing it here alone would buy nothing.
+//
+// ── WHAT VERIFY DELIBERATELY DOES NOT REFUSE ─────────────────────────────────
+//
+// An ALREADY-VERIFIED account. Setting a true flag to true is not an error, and
+// there is no branch for it: the row is not re-read to find out, because the only
+// realistic way to arrive twice is an UNLINK that failed, and answering 400 there
+// would report failure for the one path where everything worked. MESSAGES.AUTH
+// .EMAIL_VERIFIED is written to be true on both.
+//
+// A BANNED account, for the reasons given at line 741 — the token was earned by
+// controlling the mailbox, the ban is enforced by login's 403 and by 3.10, and
+// refusing here would answer differently for banned and unbanned tokens on an
+// unauthenticated route. The rewritten user:state carries `isBanned` straight off
+// the row, so verifying does not soften a ban by one field.
+//
+// There is no decoy read and no timing argument in this function, unlike
+// forgotPassword(). The input is a token rather than an address, so neither the
+// 400 nor its latency says anything about whether any given account exists.
+//
+// ── WHAT 3.8 LEAVES TO LATER TASKS ───────────────────────────────────────────
+//
+// The route, its 5-per-15-minutes limit and the response envelope are 3.9's.
+// verifyEmail() returns nothing at all, because apidoc §8.2's 200 row specifies no
+// body and the flag it reports is already readable from GET /users/me. The
+// requireVerifiedEmail guard that consumes the rewritten record — and the choice
+// of exactly three surfaces to mount it on — is 3.11's (plan:352).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -1920,6 +2035,19 @@ export async function resetPassword({ token, newPassword }) {
       );
       throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
     }
+    // P2023 — added while measuring 3.8, which hit it on the identical code path.
+    // An id that is not a UUID raises "Inconsistent column data: Error creating
+    // UUID", NOT P2025, and the `typeof userId === 'string'` guard above cannot
+    // exclude it because a corrupted value like "not-a-uuid" is a perfectly good
+    // non-empty string. Without this branch a corrupted pointer target answers 500
+    // rather than the 400 every other unusable-token case answers.
+    if (err?.code === 'P2023') {
+      log.error(
+        { err, userId },
+        '[auth] resetPassword: reset key held a malformed id — treated as invalid',
+      );
+      throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+    }
     throw err;
   }
 
@@ -1995,6 +2123,184 @@ export async function resetPassword({ token, newPassword }) {
   return { revokedSessions };
 }
 
+/**
+ * The columns the `user:state` rewrite needs, and nothing else — plan:358's four
+ * fields plus the id to key on.
+ *
+ * `deletedAt` is selected even though the where-clause already guarantees it is
+ * null, for the reason login() gives at line 1223: the record stays truthful if
+ * that filter is ever relaxed, rather than carrying a hardcoded null that quietly
+ * becomes a lie. No `email`, no `fullName`, and above all no `passwordHash` — none
+ * of them belongs in that record or in this function.
+ */
+const VERIFIED_STATE_FIELDS = Object.freeze({
+  id: true,
+  role: true,
+  isBanned: true,
+  isEmailVerified: true,
+  deletedAt: true,
+});
+
+/**
+ * `POST /auth/verify-email` — apidoc §8.2, plan:349, TRD:1461.
+ *
+ * Consumes a single-use verification token and sets `isEmailVerified`. The token
+ * is read but NOT deleted until the row is committed, which is the opposite of
+ * resetPassword() and is argued at length in the header: there is no
+ * resend-verification endpoint, so a token destroyed by a later failure cannot be
+ * replaced.
+ *
+ * Answers one 400 for every unusable token — unknown, expired, already consumed,
+ * malformed, pointing at no row, or pointing at a soft-deleted account — and 503
+ * only when Redis itself could not be read (TRD:1478, apidoc:302). Returns
+ * nothing; the flag is the outcome.
+ *
+ * @param {{ token: string }} input The raw token from the emailed link.
+ * @returns {Promise<void>}
+ */
+export async function verifyEmail({ token }) {
+  // Hashed first and on its own, as in resetPassword(): keys.emailVerify() throws
+  // on a token that is absent, empty, or not a string, and that is this caller's
+  // 400 rather than something for the Redis catch below to mislabel as an outage.
+  let verifyKey;
+  try {
+    verifyKey = keys.emailVerify(token);
+  } catch {
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  // GET, not GETDEL. The whole asymmetry with resetPassword() lives on this line;
+  // the header says why, and the UNLINK below is the other half of it.
+  let stored;
+  try {
+    stored = await redis.get(verifyKey);
+  } catch (err) {
+    // Fail closed (TRD:1478): an unreadable token is not a verified account. The
+    // token is untouched, so the caller's retry after the outage still works.
+    log.error(
+      { err },
+      '[auth] verifyEmail: redis unavailable — token not read, nothing verified',
+    );
+    throw ServiceUnavailableError();
+  }
+
+  // Unknown, expired, or already redeemed — apidoc:301's three causes, and one
+  // answer for all of them so a token cannot be probed to learn which it was.
+  if (stored === null) {
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  // setWithTTL JSON-stringifies every value, so this comes back as a QUOTED
+  // string: measured, GET returns "\"<uuid>\"" and not the bare id. Parsing is
+  // mandatory, not stylistic — the unparsed value would be a 36-character id
+  // wrapped in quote characters and would never match a row.
+  let userId;
+  try {
+    userId = JSON.parse(stored);
+  } catch {
+    userId = null;
+  }
+
+  if (typeof userId !== 'string' || userId.length === 0) {
+    // Corruption in a namespace only register() writes, so it is logged loudly and
+    // still answered as an invalid token, which is the honest answer to the caller.
+    log.error(
+      { verifyKey },
+      '[auth] verifyEmail: verification key held an unusable value — treated as invalid',
+    );
+    throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+  }
+
+  let row;
+  try {
+    // `deletedAt: null` is part of the where-clause, not a filter applied after
+    // the fact: measured against Prisma 6.19, a soft-deleted row raises P2025 and
+    // the flag is left false. See the header — this one statement decides that the
+    // account exists, that it is not soft-deleted, and what user:state should say.
+    row = await prisma.user.update({
+      where: { id: userId, deletedAt: null },
+      data: { isEmailVerified: true },
+      select: VERIFIED_STATE_FIELDS,
+    });
+  } catch (err) {
+    if (err?.code === 'P2025') {
+      // No such row, or a soft-deleted one. The first case is the residual named
+      // at line 45: a token that outlived a rolled-back COMMIT. Warn, not error —
+      // both are states the design allows for, and both self-heal in 24 h.
+      log.warn(
+        { userId },
+        '[auth] verifyEmail: token names no live account — treated as invalid',
+      );
+      throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+    }
+    if (err?.code === 'P2023') {
+      // Measured, and the reason this catch differs from resetPassword()'s: an id
+      // that is not a UUID raises P2023, not P2025, and the string guard above
+      // cannot exclude it. Without this branch the answer would be a 500.
+      log.error(
+        { err, userId },
+        '[auth] verifyEmail: verification key held a malformed id — treated as invalid',
+      );
+      throw BadRequestError(MESSAGES.VALIDATION.TOKEN_INVALID);
+    }
+    throw err;
+  }
+
+  // Consumed only now, and best-effort: the flag is committed, so a token that
+  // outlives this line can only be replayed into the same idempotent success.
+  try {
+    const removed = await redis.unlink(verifyKey);
+    if (removed === 0) {
+      // Measured: 1 when this call removed the key, 0 when it was already gone.
+      // Reaching 0 here means a second request carrying the same token passed its
+      // GET inside this one's window — harmless, since both set the same flag, but
+      // it is the only visible trace of the race and worth one line.
+      log.warn(
+        { userId: row.id },
+        '[auth] verifyEmail: token was already consumed concurrently — same outcome, no action',
+      );
+    }
+  } catch (err) {
+    log.warn(
+      { err, userId: row.id },
+      '[auth] verifyEmail: token not deleted — replayable until its 24h TTL, and idempotent',
+    );
+  }
+
+  // plan:349's reason for existing: without this the new flag is invisible to
+  // requireVerifiedEmail for up to TTL.userState. Best-effort — the header argues
+  // why a failure here must not turn a completed verification into a 503.
+  //
+  // Tracked in a flag rather than assumed, because the success line below is the
+  // one an operator reads when a verified user still cannot enrol. Reporting
+  // "state rewritten" on the branch that just warned it could not be rewritten
+  // would point that investigation away from the only thing that went wrong.
+  let stateRewritten = false;
+  try {
+    await setWithTTL(
+      keys.userState(row.id),
+      {
+        role: row.role,
+        isBanned: row.isBanned,
+        isEmailVerified: row.isEmailVerified,
+        deletedAt: row.deletedAt,
+      },
+      TTL.userState,
+    );
+    stateRewritten = true;
+  } catch (err) {
+    log.warn(
+      { err, userId: row.id },
+      '[auth] verifyEmail: user:state not rewritten — flag is committed, next read falls through to Postgres',
+    );
+  }
+
+  log.info(
+    { userId: row.id, stateRewritten },
+    '[auth] verifyEmail: email verified',
+  );
+}
+
 export default {
   register,
   generateToken,
@@ -2003,5 +2309,6 @@ export default {
   logout,
   forgotPassword,
   resetPassword,
+  verifyEmail,
   REFRESH_COOKIE,
 };

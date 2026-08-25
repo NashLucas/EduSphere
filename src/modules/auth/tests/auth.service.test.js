@@ -152,19 +152,26 @@ vi.mock('bcryptjs', async () => {
   };
 });
 
-// SADD, GETDEL, UNLINK, SREM, EXISTS and SMEMBERS are the Redis commands this
-// module issues directly; everything else goes through cache-keys.js, whose
+// SADD, GET, GETDEL, UNLINK, SREM, EXISTS and SMEMBERS are the Redis commands
+// this module issues directly; everything else goes through cache-keys.js, whose
 // setWithTTL is mocked below. Importing the real client would be harmless
 // (lazyConnect opens no socket) but would leave the index write, the rotation
-// gate, the logout revocation and 3.7's reset sweep unobservable.
+// gate, the logout revocation, 3.7's reset sweep and 3.8's verify read
+// unobservable.
 //
-// `getdel`, `unlink`, `exists` and `smembers` all default to the ABSENT answer —
-// null, 0, 0 and [] — so a test that forgets to arm a live session fails as an
-// unauthenticated one, or reports `revoked: false`, rather than passing on a
-// mock's convenient truthiness.
+// `get`, `getdel`, `unlink`, `exists` and `smembers` all default to the ABSENT
+// answer — null, null, 0, 0 and [] — so a test that forgets to arm a live session
+// or a live verification token fails as an unauthenticated or invalid one, or
+// reports `revoked: false`, rather than passing on a mock's convenient truthiness.
+//
+// `get` is separate from `getdel` rather than aliased to it, and that separation is
+// load-bearing: verifyEmail() is the one path that reads its token WITHOUT
+// consuming it, so a shared mock would make the GET-then-UNLINK asymmetry the
+// service is built around impossible to observe here.
 vi.mock('../../../config/redis.js', () => {
   const client = {
     sadd: vi.fn(async () => 1),
+    get: vi.fn(async () => null),
     getdel: vi.fn(async () => null),
     unlink: vi.fn(async () => 0),
     srem: vi.fn(async () => 1),
@@ -203,6 +210,7 @@ const {
   logout,
   forgotPassword,
   resetPassword,
+  verifyEmail,
   REFRESH_COOKIE,
 } = await import('../auth.service.js');
 
@@ -253,6 +261,11 @@ beforeEach(() => {
   // Absent by default: a refresh test that forgets to arm a session fails as an
   // unauthenticated one rather than passing on a mock's convenient truthiness.
   redis.getdel.mockResolvedValue(null);
+  // 3.8, and absent for the same reason: a verifyEmail test that forgets to arm
+  // the token fails as an unknown one. Reset here as well as in the factory
+  // because a verify test that overrides it with mockResolvedValue would otherwise
+  // leak that value into every later test in the file.
+  redis.get.mockResolvedValue(null);
   // 3.7. Empty index, absent key — the answers a live Redis gives for an account
   // that never logged in (measured: SMEMBERS on a missing key returns a real []).
   redis.smembers.mockResolvedValue([]);
@@ -2837,6 +2850,32 @@ describe('resetPassword — the account and the sweep', () => {
     expect(redis.smembers).not.toHaveBeenCalled();
   });
 
+  it('refuses a valid token whose stored id is not a UUID (P2023)', async () => {
+    // Added while measuring 3.8, which hit this on the identical code path: an id
+    // that is not a UUID raises P2023 ("Inconsistent column data"), NOT P2025, and
+    // the `typeof userId === 'string'` guard cannot exclude it because a corrupted
+    // value like "not-a-uuid" is a perfectly good non-empty string. Before the
+    // branch existed this answered 500 rather than the 400 every other unusable
+    // token answers.
+    const malformed = new Error(
+      'Inconsistent column data: Error creating UUID, invalid character',
+    );
+    malformed.code = 'P2023';
+    update.mockRejectedValue(malformed);
+    redis.getdel.mockResolvedValue(JSON.stringify('not-a-uuid'));
+
+    const err = await resetPassword({
+      token: TOKEN_STR,
+      newPassword: NEW_PASSWORD,
+    }).catch((e) => e);
+
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toBe(MESSAGES.VALIDATION.TOKEN_INVALID);
+    expect(err.isOperational).toBe(true);
+    expect(redis.smembers).not.toHaveBeenCalled();
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
   it('rethrows a Prisma error that is not P2025 unchanged', async () => {
     const boom = new Error('connection terminated');
     boom.code = 'P1001';
@@ -2920,6 +2959,535 @@ describe('resetPassword — the account and the sweep', () => {
     });
 
     expect(update.mock.calls[0][0].where).toEqual({ id: RECOVERED.id });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email verification — task 3.8
+//
+// The digest is recomputed with createHash rather than by calling
+// keys.emailVerify(), for the reason the 3.7 block already gives: asking the
+// builder to confirm its own output proves only that it is deterministic.
+//
+// One claim runs through nearly every test below and is the whole reason 3.8's
+// shape differs from 3.7's: the token is NOT consumed unless the flag was
+// committed. There is no resend-verification endpoint anywhere in apidoc, so a
+// token destroyed by a later failure cannot be replaced, and TRD:1482 refuses
+// enrollments, course creation and quiz attempts for the life of the account.
+// Every refusal below therefore asserts `redis.unlink` was not called — that
+// assertion is the test of the GET-instead-of-GETDEL decision, not decoration.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const verifyKeyFor = (token) =>
+  `verify:email:${createHash('sha256').update(token, 'utf8').digest('hex')}`;
+
+/**
+ * The row the update returns: exactly VERIFIED_STATE_FIELDS, with the flag
+ * already true because the write set it.
+ */
+const VERIFYING = Object.freeze({
+  id: '77777777-6666-5555-4444-333333333333',
+  role: UserRole.STUDENT,
+  isBanned: false,
+  isEmailVerified: true,
+  deletedAt: null,
+});
+
+const VERIFY_TOKEN = 'c'.repeat(64);
+
+// ── verify-email: the happy path ─────────────────────────────────────────────
+
+describe('verifyEmail — the happy path', () => {
+  beforeEach(() => {
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+    update.mockResolvedValue({ ...VERIFYING });
+    // 1, not the file-wide default of 0: measured against Redis 7.4.9, UNLINK
+    // answers 1 when this call removed the key and 0 when it was already gone. The
+    // default models the raced case, which has its own test below, so the ordinary
+    // one has to say so explicitly.
+    redis.unlink.mockResolvedValue(1);
+  });
+
+  it('reads verify:email:<sha256(token)> and never the raw token', async () => {
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(redis.get).toHaveBeenCalledTimes(1);
+    expect(redis.get).toHaveBeenCalledWith(verifyKeyFor(VERIFY_TOKEN));
+    // TRD:1474. Stronger than matching the digest shape: this fails if the key ever
+    // carries the token itself, which a `verify:email:${token}` typo would produce
+    // while still looking like a 64-character hex suffix.
+    expect(redis.get.mock.calls[0][0]).not.toContain(VERIFY_TOKEN);
+  });
+
+  it('reads the token WITHOUT consuming it — GET, never GETDEL', async () => {
+    // The single line the whole asymmetry with resetPassword() lives on. A GETDEL
+    // here would still pass every other test in this block, because the happy path
+    // deletes the key either way; only this assertion separates them.
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(redis.getdel).not.toHaveBeenCalled();
+  });
+
+  it('sets isEmailVerified on the account the token names, and nothing else', async () => {
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(update).toHaveBeenCalledTimes(1);
+    const [{ where, data }] = update.mock.calls[0];
+    expect(where).toEqual({ id: VERIFYING.id, deletedAt: null });
+    // Exhaustive rather than a property check: a write that also touched `role` or
+    // `isBanned` would be a privilege escalation reachable from an emailed link.
+    expect(data).toEqual({ isEmailVerified: true });
+  });
+
+  it('excludes soft-deleted accounts in the where-clause, not after the fact', async () => {
+    // Measured against Prisma 6.19: a non-unique filter is accepted in update()'s
+    // where-clause, and a row it excludes raises P2025 with the flag left false. The
+    // alternative — read, check deletedAt in JS, then write — is two round trips
+    // with a window between them.
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    const { where } = update.mock.calls[0][0];
+    expect(where).toHaveProperty('deletedAt', null);
+  });
+
+  it('never asks the database for passwordHash or email', async () => {
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    const { select } = update.mock.calls[0][0];
+    expect(Object.keys(select).sort()).toEqual([
+      'deletedAt',
+      'id',
+      'isBanned',
+      'isEmailVerified',
+      'role',
+    ]);
+  });
+
+  it('returns nothing at all', async () => {
+    // apidoc §8.2's 200 row for this route specifies no `data`, and the flag is the
+    // outcome. Returning the row would put role and isBanned one careless
+    // controller away from an unauthenticated response body.
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+  });
+
+  it('consumes the token only AFTER the flag is committed', async () => {
+    // Sampled at EVERY touch of the verify key, not at the last one — the lesson
+    // 3.7's ordering test learned the hard way, where a mutant that acted early and
+    // then acted again late overwrote a single flag with the reassuring value.
+    //
+    // Ordering is the design decision this test exists for: consuming first, as
+    // resetPassword() does, means any later failure destroys a token that CANNOT be
+    // reissued, because no resend-verification endpoint exists.
+    const updatesAtUnlink = [];
+    redis.unlink.mockImplementation(async () => {
+      updatesAtUnlink.push(update.mock.calls.length);
+      return 1;
+    });
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(updatesAtUnlink).toEqual([1]);
+    expect(redis.unlink).toHaveBeenCalledWith(verifyKeyFor(VERIFY_TOKEN));
+  });
+
+  it('reads the token before it writes the row', async () => {
+    const order = [];
+    redis.get.mockImplementation(async () => {
+      order.push('GET');
+      return JSON.stringify(VERIFYING.id);
+    });
+    update.mockImplementation(async () => {
+      order.push('UPDATE');
+      return { ...VERIFYING };
+    });
+    setWithTTL.mockImplementation(async () => {
+      order.push('SET user:state');
+      return 'OK';
+    });
+    redis.unlink.mockImplementation(async () => {
+      order.push('UNLINK');
+      return 1;
+    });
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(order).toEqual(['GET', 'UPDATE', 'UNLINK', 'SET user:state']);
+  });
+
+  it('rewrites user:state for TTL.userState so the flag is visible at once', async () => {
+    // plan:349's reason for existing. Without this the account is verified in
+    // PostgreSQL and still refused by requireVerifiedEmail for up to 15 minutes,
+    // which reads to the user as a verification link that did not work.
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    const stateWrites = setWithTTL.mock.calls.filter(([key]) =>
+      String(key).startsWith('user:state:'),
+    );
+    expect(stateWrites).toHaveLength(1);
+    const [key, value, ttl] = stateWrites[0];
+    expect(key).toBe(`user:state:${VERIFYING.id}`);
+    expect(value).toEqual({
+      role: VERIFYING.role,
+      isBanned: false,
+      isEmailVerified: true,
+      deletedAt: null,
+    });
+    expect(ttl).toBe(TTL.userState);
+    expect(ttl).toBe(15 * 60);
+  });
+
+  it('takes every user:state field from the updated row, not from constants', async () => {
+    // A record assembled from literals — `{ role: 'STUDENT', isBanned: false, ... }`
+    // — passes the test above and is a privilege bug: it would hand a banned
+    // instructor an unbanned STUDENT fast-path record for 15 minutes. Only fields
+    // that could not have been guessed prove the row is the source.
+    update.mockResolvedValue({
+      ...VERIFYING,
+      role: UserRole.INSTRUCTOR,
+      isBanned: true,
+    });
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    const [, value] = setWithTTL.mock.calls.find(([key]) =>
+      String(key).startsWith('user:state:'),
+    );
+    expect(value.role).toBe(UserRole.INSTRUCTOR);
+    expect(value.isBanned).toBe(true);
+  });
+
+  it('takes the account from the token, never from a caller-supplied id', async () => {
+    // The same claim resetPassword() makes: an `id` in the payload would let anyone
+    // holding one valid token verify any account.
+    await verifyEmail({ token: VERIFY_TOKEN, userId: 'attacker-chosen-id' });
+
+    expect(update.mock.calls[0][0].where.id).toBe(VERIFYING.id);
+  });
+
+  it('touches no session and sends no email', async () => {
+    // Verification is not a session event: unlike a password reset it invalidates
+    // nothing, so sweeping the index would log the user out of every device for
+    // clicking a link. And re-sending the verification email from the endpoint that
+    // just consumed the token would be an unauthenticated mail amplifier.
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(redis.smembers).not.toHaveBeenCalled();
+    expect(redis.srem).not.toHaveBeenCalled();
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(sendVerificationEmail).not.toHaveBeenCalled();
+    expect(redis.unlink).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs the success once, recording that the state write landed', async () => {
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(logger.child().warn).not.toHaveBeenCalled();
+    expect(logger.child().error).not.toHaveBeenCalled();
+    expect(logger.child().info).toHaveBeenCalledTimes(1);
+    expect(logger.child().info.mock.calls[0][0]).toMatchObject({
+      userId: VERIFYING.id,
+      stateRewritten: true,
+    });
+  });
+});
+
+// ── verify-email: every token it refuses, and the one it preserves ───────────
+
+describe('verifyEmail — a token it refuses', () => {
+  const expectTokenInvalid = (err) => {
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toBe(MESSAGES.VALIDATION.TOKEN_INVALID);
+    expect(err.isOperational).toBe(true);
+  };
+
+  it.each([
+    ['', 'empty'],
+    [null, 'null'],
+    [undefined, 'absent'],
+    [{}, 'an object'],
+    [64, 'a number'],
+  ])('refuses %s (%s) without touching Redis', async (token) => {
+    // keys.emailVerify() throws a TypeError on all five, and that has to surface as
+    // this caller's 400 rather than being caught by the Redis handler below and
+    // mislabelled as an outage — which would answer 503 and invite a retry.
+    const err = await verifyEmail({ token }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown, expired or already-consumed token with one 400', async () => {
+    // apidoc:301's three causes arrive here as the same `null`, which is exactly why
+    // they cannot be told apart.
+    redis.get.mockResolvedValue(null);
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(update).not.toHaveBeenCalled();
+    expect(redis.unlink).not.toHaveBeenCalled();
+    // At no log level at all. An expired link is the single most ordinary way this
+    // endpoint is reached, and it says nothing about the health of the system; a
+    // service that fell through to the corruption branch below would answer the same
+    // 400 while filing every stale link as an operator problem. Measured — that
+    // mutant survives every other assertion in this block.
+    expect(logger.child().error).not.toHaveBeenCalled();
+    expect(logger.child().warn).not.toHaveBeenCalled();
+  });
+
+  it('gives two different unknown tokens the same answer', async () => {
+    redis.get.mockResolvedValue(null);
+
+    const first = await verifyEmail({ token: 'a'.repeat(64) }).catch((e) => e);
+    const second = await verifyEmail({ token: 'b'.repeat(64) }).catch((e) => e);
+
+    expect(first.message).toBe(second.message);
+    expect(first.statusCode).toBe(second.statusCode);
+  });
+
+  it.each([
+    ['not JSON at all', 'raw-user-id-without-quotes'],
+    ['a JSON number', '42'],
+    ['a JSON null', 'null'],
+    ['a JSON object', '{"id":"x"}'],
+    ['an empty JSON string', '""'],
+  ])('refuses a stored value that is %s', async (_label, stored) => {
+    redis.get.mockResolvedValue(stored);
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(update).not.toHaveBeenCalled();
+    // Corruption in a namespace only register() writes — the operator has to see it
+    // even though the caller is told nothing.
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a token whose account was hard-deleted (P2025)', async () => {
+    // The residual named at auth.service.js:45 — a token that outlived a rolled-back
+    // COMMIT. Warned rather than errored: it is a state the design allows for, and
+    // it self-heals when the 24h TTL expires.
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+    expect(logger.child().error).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token whose account is soft-deleted, which arrives as the same P2025', async () => {
+    // Measured: `where: { id, deletedAt: null }` against a soft-deleted row raises
+    // P2025 and leaves the flag false. The service cannot distinguish this from a
+    // missing row, and deliberately does not try — both answer 400.
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+    const excluded = new Error(
+      'An operation failed because it depends on one or more records that were required but not found.',
+    );
+    excluded.code = 'P2025';
+    update.mockRejectedValue(excluded);
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expectTokenInvalid(err);
+  });
+
+  it('refuses a stored id that is not a UUID (P2023), not a 500', async () => {
+    // Measured, and not anticipated: Prisma raises P2023 rather than P2025 for an id
+    // that is not a UUID, and the string guard cannot exclude it because
+    // "not-a-uuid" is a perfectly good non-empty string. Without the branch this is
+    // an unhandled Prisma error and the caller reads Internal Server Error.
+    redis.get.mockResolvedValue(JSON.stringify('not-a-uuid'));
+    const malformed = new Error(
+      'Inconsistent column data: Error creating UUID, invalid character',
+    );
+    malformed.code = 'P2023';
+    update.mockRejectedValue(malformed);
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expectTokenInvalid(err);
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it('rethrows a Prisma error that is neither P2025 nor P2023 unchanged', async () => {
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+    const boom = new Error('connection terminated');
+    boom.code = 'P1001';
+    update.mockRejectedValue(boom);
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expect(err).toBe(boom);
+    expect(err.statusCode).toBeUndefined();
+  });
+
+  it('answers 503, NOT 400, when the GET itself fails', async () => {
+    // TRD:1478 makes this path fail closed. A 400 would tell a user holding a
+    // perfectly good link that the link is broken — and since no endpoint reissues
+    // one, that is a dead end rather than an inconvenience.
+    redis.get.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const err = await verifyEmail({ token: VERIFY_TOKEN }).catch((e) => e);
+
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toBe(MESSAGES.COMMON.SERVICE_UNAVAILABLE);
+    expect(update).not.toHaveBeenCalled();
+    expect(logger.child().error).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['the token is unknown', async () => redis.get.mockResolvedValue(null)],
+    [
+      'the stored value is corrupt',
+      async () => redis.get.mockResolvedValue('42'),
+    ],
+    [
+      'the account is gone',
+      async () => redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id)),
+    ],
+    [
+      'Redis cannot be read',
+      async () => redis.get.mockRejectedValue(new Error('ECONNREFUSED')),
+    ],
+  ])('leaves the token in Redis when %s', async (_label, arrange) => {
+    // The point of GET-then-UNLINK, asserted on every refusal branch at once. If any
+    // of these consumed the token, a transient failure would permanently strip the
+    // account of the only way it can ever be verified: TRD:1482 then refuses
+    // enrollments, course creation and quiz attempts for the life of the account,
+    // and re-registering the same address is register()'s 409.
+    await arrange();
+
+    await verifyEmail({ token: VERIFY_TOKEN }).catch(() => {});
+
+    expect(redis.unlink).not.toHaveBeenCalled();
+    expect(redis.getdel).not.toHaveBeenCalled();
+    // And no fast-path record either: a refusal must not publish a user:state entry
+    // for an account it just declined to verify.
+    expect(setWithTTL).not.toHaveBeenCalled();
+  });
+});
+
+// ── verify-email: what it deliberately does not refuse ───────────────────────
+
+describe('verifyEmail — what it allows on purpose', () => {
+  beforeEach(() => {
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+    redis.unlink.mockResolvedValue(1);
+  });
+
+  it('succeeds for an account that was already verified', async () => {
+    // Idempotent by construction: `data: { isEmailVerified: true }` is a no-op write
+    // on a row that already says true, so a replayed link earns the same 200. A
+    // "you have already verified" refusal would need a read-then-branch, and would
+    // turn the ordinary case of a user clicking the link twice into an error.
+    update.mockResolvedValue({ ...VERIFYING, isEmailVerified: true });
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a BANNED account verify, and records the ban in user:state', async () => {
+    // Refusing here would make an unauthenticated route into a ban oracle: anyone
+    // holding a link would learn the account's moderation status. login()'s 403
+    // enforces the ban and charges a correct password for the answer, which is where
+    // that belongs. Verification changes nothing a banned account can do.
+    update.mockResolvedValue({ ...VERIFYING, isBanned: true });
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+
+    const [, value] = setWithTTL.mock.calls.find(([key]) =>
+      String(key).startsWith('user:state:'),
+    );
+    // The rewrite must not un-ban anyone: it carries the row's isBanned forward, so
+    // the fast path stays as restrictive as PostgreSQL is.
+    expect(value.isBanned).toBe(true);
+  });
+});
+
+// ── verify-email: the two best-effort steps, and the one that is not ──────────
+
+describe('verifyEmail — after the flag is committed', () => {
+  beforeEach(() => {
+    redis.get.mockResolvedValue(JSON.stringify(VERIFYING.id));
+    update.mockResolvedValue({ ...VERIFYING });
+    redis.unlink.mockResolvedValue(1);
+  });
+
+  it('still succeeds when the token cannot be deleted', async () => {
+    // The row is committed, so the request succeeded. A 503 here would report
+    // failure for a success and send the caller back to a link that now works —
+    // except they have been told it did not.
+    redis.unlink.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('rewrites user:state even when the token deletion failed', async () => {
+    // Ordering, not politeness: the state rewrite is what makes the flag visible, so
+    // it must not be skipped by a failure in the step before it.
+    redis.unlink.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(
+      setWithTTL.mock.calls.filter(([key]) =>
+        String(key).startsWith('user:state:'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('warns when UNLINK returns 0, which is the concurrent-replay trace', async () => {
+    // Measured: 0 means the key was already gone, so a second request carrying the
+    // same token passed its GET inside this one's window. Harmless — both set the
+    // same flag — but it is the only visible trace of the race.
+    redis.unlink.mockResolvedValue(0);
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing when UNLINK returns 1', async () => {
+    // The other half of the assertion above: without this, a service that warned
+    // unconditionally would pass it and fill the log with a race that never happened.
+    redis.unlink.mockResolvedValue(1);
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(logger.child().warn).not.toHaveBeenCalled();
+  });
+
+  it('still succeeds when user:state cannot be rewritten', async () => {
+    // Both failure modes of a missing or stale record are MORE restrictive than the
+    // truth — a miss falls through to PostgreSQL, a stale record gates the account
+    // for at most 15 more minutes — so neither justifies failing a request whose
+    // token has just been consumed.
+    setWithTTL.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(logger.child().warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim the state was rewritten when it was not', async () => {
+    // The success line is what an operator reads when a verified user still cannot
+    // enrol. Logging "state rewritten" on the branch that just warned it could not
+    // be rewritten would point that investigation away from the only fault.
+    setWithTTL.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await verifyEmail({ token: VERIFY_TOKEN });
+
+    expect(logger.child().info.mock.calls[0][0].stateRewritten).toBe(false);
+  });
+
+  it('survives both best-effort steps failing at once', async () => {
+    redis.unlink.mockRejectedValue(new Error('ECONNREFUSED'));
+    setWithTTL.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    await expect(verifyEmail({ token: VERIFY_TOKEN })).resolves.toBeUndefined();
+    expect(logger.child().warn).toHaveBeenCalledTimes(2);
   });
 });
 
