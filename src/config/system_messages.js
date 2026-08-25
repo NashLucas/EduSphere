@@ -92,12 +92,43 @@ export const MESSAGES = Object.freeze({
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong
   // to the Zod schemas that emit them (Day 3), but the wording is contract, so it
   // is pinned here rather than retyped there.
+  //
+  // These are the `message` half of an `errors[]` entry, so each one is read
+  // beside a field name and next to a form input. Written as an instruction the
+  // user can act on ("must be...") rather than a verdict ("is invalid"), and
+  // never mentioning a rule the form did not state.
   VALIDATION: Object.freeze({
     // apidoc §1.
     EMAIL_INVALID: 'Invalid email format',
-    // apidoc §1 — the password policy, stated as the user reads it.
+    // apidoc §1 — the password policy, stated as the user reads it. This is the
+    // sentence that fixes the policy at lower + upper + digit and NO symbol
+    // requirement; the regex in auth.schema.js is written to match it exactly.
     PASSWORD_WEAK:
       'Password must be at least 8 characters long with uppercase, lowercase, and numbers',
+    // authored — task 3.1. FIELD_LIMITS.NAME_MIN/MAX_LENGTH. One string for both
+    // ends: a client that sent 1 character and one that sent 200 have the same
+    // question, and two messages would only need keeping consistent.
+    NAME_LENGTH: 'Full name must be between 2 and 100 characters',
+    // authored — task 3.1. FIELD_LIMITS.EMAIL_MAX_LENGTH.
+    EMAIL_TOO_LONG: 'Email address must be at most 254 characters',
+    // authored — task 3.1. FIELD_LIMITS.PASSWORD_MAX_BYTES. Says bytes, not
+    // characters, because that is what is measured and the two differ for any
+    // non-ASCII passphrase -- 36 accented characters already spend 72 bytes.
+    // Telling that user "at most 72 characters" while refusing their 40 would be
+    // a message they cannot act on.
+    PASSWORD_TOO_LONG: 'Password must be at most 72 bytes long',
+    // authored — task 3.1. Login and forgot-password check presence only; the
+    // policy is not re-applied there (see auth.schema.js).
+    PASSWORD_REQUIRED: 'Password is required',
+    // authored — task 3.1. A token that is empty or absurdly long never reaches
+    // Redis. Deliberately identical to what apidoc's 400 reports for a token
+    // that is unknown, consumed or expired, so the two answers cannot be
+    // compared to learn whether a given token was ever real.
+    TOKEN_INVALID: 'Invalid or expired token',
+    // authored — task 3.1. `role` on register accepts STUDENT and INSTRUCTOR
+    // only. Names both so the caller does not have to guess the third value is
+    // the one being refused, but does not explain that ADMIN exists.
+    ROLE_INVALID: 'Role must be either STUDENT or INSTRUCTOR',
   }),
 });
 

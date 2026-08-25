@@ -120,6 +120,42 @@ export const PAGINATION = Object.freeze({
   MAX_LIMIT: 100,
 });
 
+// ── Field limits (apidoc §8.2, §8.3) ─────────────────────────────────────────
+//
+// Bounds the Zod schemas enforce on user-supplied strings. Here rather than in
+// one module's schema file because each is used by more than one module: the
+// name bounds by POST /auth/register and PATCH /users/me, the password bounds by
+// register and reset-password. The wording that reports a breach lives in
+// MESSAGES.VALIDATION; these are the numbers that wording describes.
+//
+// Two of these are not in the plan text and exist for a measured reason:
+//
+// EMAIL_MAX_LENGTH is RFC 5321's cap on a forward path (64-octet local part +
+// @ + 255-octet domain, 254 in practice). It matters here because `email` is a
+// PostgreSQL `text` column with a UNIQUE constraint and therefore a btree index,
+// and btree refuses an entry over roughly 2704 bytes. Unbounded, a long address
+// turns the uniqueness check into a 500 from the driver instead of a 422 from
+// the validator.
+//
+// PASSWORD_MAX_BYTES is bcrypt's block limit, and the reason it is in BYTES.
+// Measured on bcryptjs 2.4.3: hashing 72 'A's and then comparing 72 'A's + 'B'
+// returns TRUE, as does the same hash against 272 characters. 36 accented
+// characters (72 bytes) compare TRUE against the hash of 40 of them. Everything
+// past the 72nd byte is silently discarded, so without this cap two different
+// passwords sharing a 72-byte prefix are interchangeable at login -- and the
+// boundary lands mid-string for any non-ASCII passphrase.
+export const FIELD_LIMITS = Object.freeze({
+  NAME_MIN_LENGTH: 2,
+  NAME_MAX_LENGTH: 100,
+  EMAIL_MAX_LENGTH: 254,
+  PASSWORD_MIN_LENGTH: 8,
+  PASSWORD_MAX_BYTES: 72,
+  // An emailed verification or reset token, before task 3.3 pins its alphabet.
+  // Generous on purpose: it is a sanity bound that keeps a megabyte of junk out
+  // of a Redis key lookup, not an assertion about the token's format.
+  TOKEN_MAX_LENGTH: 512,
+});
+
 // ── Rate-limit tiers (apidoc §4, TRD §7) ─────────────────────────────────────
 //
 // The three tiers task 2.4 wires into express-rate-limit, each keyed on req.ip

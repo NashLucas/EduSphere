@@ -9,6 +9,7 @@ export default [
       globals: {
         process: 'readonly',
         console: 'readonly',
+        Buffer: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
