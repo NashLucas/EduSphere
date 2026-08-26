@@ -168,6 +168,17 @@ export const MESSAGES = Object.freeze({
     // surfaces on the flag, and 3.11 owns which ones; naming them here would put
     // a second, drifting copy of that list in front of the user.
     EMAIL_VERIFIED: 'Your email address has been verified.',
+    // authored — task 3.11. TRD:1482 and apidoc §3's warning gate exactly three
+    // surfaces on the flag and fix the status code at 403, but pin no wording.
+    //
+    // An instruction rather than a verdict, for the same reason the VALIDATION
+    // strings are: the reader can act on this one, and the action is the only
+    // thing they need from it. It names neither the blocked surface — one string
+    // answers all three, and requireVerifiedEmail cannot know which route it is
+    // mounted on — nor a way to request a fresh link, because apidoc publishes
+    // no resend endpoint and a message offering one would describe a route that
+    // does not exist.
+    EMAIL_NOT_VERIFIED: 'Please verify your email address before continuing.',
   }),
 
   // Field-level strings apidoc quotes inside its `errors[]` example. They belong

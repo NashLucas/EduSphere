@@ -466,8 +466,11 @@ export async function requireAuth(req, _res, next) {
     return next(err);
   }
 
-  // Outside the try, so a synchronous throw from a later layer cannot be caught
-  // here and turned into a second next() call on the same request.
+  // Outside the try, so a throw out of next() cannot be caught here and turned
+  // into a second next() call on the same request. Corrected in 3.11: this used
+  // to say "a synchronous throw from a later layer", which express 5.2.1 makes
+  // impossible — each Layer wraps its own handler, so a downstream throw is
+  // answered there. The guarantee is structural, for a direct caller.
   return next();
 }
 

@@ -85,6 +85,14 @@ const { REFRESH_COOKIE } = await import('../auth.service.js');
 const { requireSameOrigin } = await import('../auth.routes.js');
 const controller = await import('../auth.controller.js');
 
+// Hoisted out of build() below, where it used to be a dynamic import inside a
+// test. Measured with --reporter=verbose: the FIRST swagger test paid this
+// module's cold load and ran in 619-1174ms while its six siblings ran in 28-139ms
+// — and once a fifth test file joined the suite (task 3.11), that one-off cost
+// crossed the 5s default timeout on roughly one full run in five. Collection time
+// has no such budget, so the cost is the same and the flake is gone.
+const { default: swaggerJsdoc } = await import('swagger-jsdoc');
+
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
 const USER = Object.freeze({
@@ -1036,9 +1044,10 @@ describe('the swagger annotations render (plan:1033)', () => {
   // Verified against the generated spec, not the comment source: YAML inside a
   // block comment is easy to break in ways nothing else notices until 4.8 wires
   // the generator and 12.8 tries to sweep the whole surface.
-  const build = async () => {
-    const { default: swaggerJsdoc } = await import('swagger-jsdoc');
-    return swaggerJsdoc({
+  // `async` with nothing to await, so that every `await build()` call site below
+  // stays exactly as it was when the import lived in here (see the hoist above).
+  const build = async () =>
+    swaggerJsdoc({
       definition: {
         openapi: '3.0.0',
         info: { title: 'spec check', version: '1.0.0' },
@@ -1052,7 +1061,6 @@ describe('the swagger annotations render (plan:1033)', () => {
       },
       apis: ['./src/modules/auth/auth.routes.js'],
     });
-  };
 
   it('publishes exactly the eight mounted endpoints', async () => {
     const spec = await build();
