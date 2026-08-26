@@ -81,8 +81,21 @@ export const MESSAGES = Object.freeze({
   AUTH: Object.freeze({
     // apidoc §8.2 — POST /auth/register.
     REGISTERED: 'Account registered successfully',
+    // authored — task 3.9. apidoc §8.2 gives POST /auth/login "same structure as
+    // register", which pins the DATA shape and not the message: reusing
+    // REGISTERED here would tell a returning user they had just created an
+    // account. Phrased to match LOGGED_OUT below, which apidoc does pin, so the
+    // two halves of one session read as a pair.
+    LOGGED_IN: 'Logged in successfully',
     // apidoc §8.2 — POST /auth/logout.
     LOGGED_OUT: 'Logged out successfully',
+    // authored — task 3.9. apidoc §8.2's 200 for POST /auth/refresh shows
+    // `{ status, data: { accessToken } }` and no `message` at all, so any wording
+    // here is a superset (see api-response.js on why the builders always send
+    // one). Names what happened to the SESSION rather than to the token, because
+    // the rotation replaces both halves and a client that reads "token issued"
+    // has no reason to expect its cookie changed too.
+    SESSION_REFRESHED: 'Session refreshed',
     // authored — deliberately identical for an unknown email and a wrong
     // password. Distinguishing them turns the login form into an account
     // oracle, which is how credential-stuffing lists get validated.

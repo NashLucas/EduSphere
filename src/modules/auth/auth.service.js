@@ -87,14 +87,22 @@
 // produce one without pre-empting it.
 //
 // So register() returns the user, and task 3.9's controller is responsible for
-// composing `{ user, accessToken }` from 3.4's helper. Two notes for whoever
-// writes it: a register-issued access token arrives at requireAuth (3.10) with no
+// composing `{ user, accessToken }` from 3.4's helper. That helper is
+// signAccessToken(), extracted in 3.9 from the identical `jwt.sign` calls login()
+// and refresh() were each holding, and it takes a ROW — a `data.user` object is a
+// valid argument. Two notes for whoever reads it: a register-issued access token
+// arrives at requireAuth (3.10) with no
 // `user:state:<id>` record, because plan:376 writes that key on login, on
 // ban/unban and on role change but not on registration — which is survivable
 // only because a MISS on user:state is defined to fall through to PostgreSQL and
 // re-derive the truth (src/utils/cache-keys.js:316), unlike a Redis outage, which
 // fails closed. If 3.10 instead treats an absent key as "not authorized", a
 // register-issued token is dead on arrival and this is where that starts.
+//
+// The second note is that register() opens NO session: no refresh token, no
+// `session:<jti>`, no cookie. apidoc §8.2 gives the 201 an `accessToken` and says
+// nothing about a cookie, where login's 200 spells the cookie out — so a new
+// account holds a 15-minute credential and must log in to get a renewable one.
 //
 // ── THE INSTRUCTOR PROFILE IS NOT CREATED HERE, AND THAT IS A KNOWN GAP ──────
 //
@@ -884,6 +892,7 @@ import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
+  NotFoundError,
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../utils/app-error.js';
@@ -1154,6 +1163,23 @@ const LOGIN_USER_FIELDS = Object.freeze({
 });
 
 /**
+ * What `GET /auth/me` returns — the public shape plus the three columns an account
+ * is entitled to read about itself (task 3.9).
+ *
+ * Built on PUBLIC_USER_FIELDS rather than on ACCOUNT_FIELDS, so it inherits the
+ * never-select-passwordHash rule and NOT the two denial flags: see getProfile() for
+ * why `isBanned` and `deletedAt` are omitted from a route only a live account can
+ * reach. `createdAt` is included because "member since" is the one fact a profile
+ * view has that no other endpoint carries.
+ */
+const PROFILE_FIELDS = Object.freeze({
+  ...PUBLIC_USER_FIELDS,
+  avatarUrl: true,
+  bio: true,
+  createdAt: true,
+});
+
+/**
  * Narrows a LOGIN_USER_FIELDS row back to apidoc §8.2's `data.user`.
  *
  * Built by picking PUBLIC_USER_FIELDS' own keys rather than by deleting the three
@@ -1214,6 +1240,111 @@ function jwtConfig() {
     accessTtl: process.env.JWT_ACCESS_EXPIRES_IN || DEFAULT_ACCESS_TTL,
     refreshTtl: process.env.JWT_REFRESH_EXPIRES_IN || DEFAULT_REFRESH_TTL,
   };
+}
+
+/**
+ * Mints an access token for an account — the ONLY place one is signed.
+ *
+ * Extracted in task 3.9 because there are now three callers and there was already
+ * one too many: login() and refresh() each held a byte-identical `jwt.sign` call,
+ * and register()'s controller needs a third for apidoc §8.2's 201 body. Four
+ * copies of a claim set is four places for `type` or the algorithm pin to drift,
+ * and a token signed with the wrong `type` claim is refused by nothing until
+ * requireAuth (3.10) reads it — which is a 15-minute-later failure in a different
+ * file.
+ *
+ * Takes a ROW, not a user id, and reads only the three claims from it. That is the
+ * narrower contract: it cannot be handed an id and left to query, so it stays a
+ * pure function with no I/O, and every caller has already fetched the row it needs
+ * to authorise the mint in the first place. PUBLIC_USER_FIELDS is a superset of
+ * what it reads, so a `data.user` object is a valid argument — which is exactly how
+ * the register controller uses it.
+ *
+ * `email` and `role` travel in the token so requireAuth can build
+ * `req.user = { id, email, role }` with no per-request query (plan:376). Its jti is
+ * generated and discarded: nothing indexes access tokens, and there is no
+ * `access:<jti>` key to revoke. That is the accepted cost of a stateless 15-minute
+ * credential, recorded in the header.
+ *
+ * @param {{id: string, email: string, role: string}} row
+ * @returns {string} a signed 15-minute access token
+ * @throws {Error} if JWT_SECRET is absent, or identical to JWT_REFRESH_SECRET
+ */
+export function signAccessToken(row) {
+  const { accessSecret, accessTtl } = jwtConfig();
+
+  return jwt.sign(
+    {
+      sub: row.id,
+      email: row.email,
+      role: row.role,
+      type: TOKEN_TYPE.ACCESS,
+    },
+    accessSecret,
+    { expiresIn: accessTtl, jwtid: randomUUID(), algorithm: JWT_ALGORITHM },
+  );
+}
+
+/**
+ * Reads the profile behind `GET /auth/me` — apidoc §8.2, task 3.9.
+ *
+ * A query rather than a reshape of `req.user`, because requireAuth (3.10) attaches
+ * only `{ id, email, role }` and apidoc calls this route's payload the "full user
+ * profile object". Deriving it from the token would also mean serving `fullName`
+ * and `isEmailVerified` values that are up to 15 minutes stale — and the one thing
+ * a client polls this route for is the verification flag flipping.
+ *
+ * Not read from `user:state:<id>` either, for the same reason in the other
+ * direction: that record holds four authorisation fields and no display fields, so
+ * it cannot answer this at all. TRD §7.1's fast path exists to avoid a query per
+ * REQUEST, not to avoid the one query a profile endpoint is made of.
+ *
+ * ── WHAT THE SELECT DELIBERATELY OMITS ──────────────────────────────────────
+ *
+ * `passwordHash` — never selected anywhere but login().
+ *
+ * `isBanned` and `deletedAt` — requireAuth has already refused every caller for
+ * whom either is set, so on this route they are the constants false and null.
+ * Publishing them would put moderation state in a response body for no information
+ * gain, and would invite a client to branch on a field the guard owns.
+ *
+ * `emailBounced` — delivery state written by the Day 11 provider webhook (TRD
+ * §6.11). It is the reason a verification email never arrived, so it plausibly
+ * belongs in a client's own view of its account, but nothing in apidoc §8.2 or
+ * TRD §6.1 says so and Day 11 owns what that flag is allowed to be read as.
+ *
+ * `updatedAt` — churns on every write and no client reads it.
+ *
+ * ── AND WHAT IT DOES NOT PRE-EMPT ───────────────────────────────────────────
+ *
+ * plan:705 gives `GET /users/:id` and `PUT /users/me` to task 10.6, so the
+ * PUBLIC-profile shape and the editable-profile shape are both that task's to
+ * decide. This is the third, narrower thing: what an account may read about
+ * ITSELF. The overlap is deliberate and one-directional — 10.6 may add fields
+ * here, but nothing here decides what a stranger sees.
+ *
+ * @param {string} userId `req.user.id` from requireAuth (3.10)
+ * @returns {Promise<object>} the profile object apidoc §8.2 calls `data.user`
+ * @throws {AppError} 404 if the row is gone — see below for why that is reachable
+ */
+export async function getProfile(userId) {
+  const row = await prisma.user.findUnique({
+    where: { id: userId, deletedAt: null },
+    select: PROFILE_FIELDS,
+  });
+
+  // Reachable, and not only through a bug. An access token stays cryptographically
+  // valid for its full 15 minutes, so a hard-deleted or soft-deleted account can
+  // present one after the row is gone; requireAuth's user:state read closes most of
+  // that window but a MISS falls through to PostgreSQL, and the two reads are not
+  // one transaction. 404 rather than 401: the credential is genuine and the
+  // resource is not there, which is exactly apidoc §5's 404 row ("target record
+  // does not exist, has been soft-deleted").
+  if (!row) {
+    throw NotFoundError();
+  }
+
+  return row;
 }
 
 /**
@@ -1280,22 +1411,15 @@ export async function login({ email, password }, { ip, userAgent } = {}) {
     throw ForbiddenError(MESSAGES.AUTH.ACCOUNT_DISABLED);
   }
 
-  const { accessSecret, refreshSecret, accessTtl, refreshTtl } = jwtConfig();
+  // Only the refresh half: signAccessToken() resolves the access secret and TTL
+  // itself. jwtConfig() is still called here rather than inside the sign, because
+  // it is also what refuses to run at all with an absent or duplicated secret.
+  const { refreshSecret, refreshTtl } = jwtConfig();
 
-  // Carries `email` and `role` so requireAuth (3.10) can build
-  // `req.user = { id, email, role }` with no database round trip per request
-  // (plan:376). Its jti is generated and discarded: nothing indexes access
-  // tokens. `sub` is the standard subject claim; 3.10 maps it to `id`.
-  const accessToken = jwt.sign(
-    {
-      sub: row.id,
-      email: row.email,
-      role: row.role,
-      type: TOKEN_TYPE.ACCESS,
-    },
-    accessSecret,
-    { expiresIn: accessTtl, jwtid: randomUUID(), algorithm: JWT_ALGORITHM },
-  );
+  // signAccessToken() rather than an inline sign, so the claim set and the
+  // algorithm pin exist once (task 3.9). `row` is a LOGIN_USER_FIELDS row and the
+  // helper reads three of its keys.
+  const accessToken = signAccessToken(row);
 
   // A uuid, not base64: cache-keys.js validates every segment against
   // /^[A-Za-z0-9._-]+$/, and a jti containing ':' or '+' would either be refused
@@ -1447,7 +1571,7 @@ export const REFRESH_COOKIE = Object.freeze({
  *         be recorded, in which case no tokens are issued
  */
 export async function refresh(token, { ip, userAgent } = {}) {
-  const { accessSecret, refreshSecret, accessTtl, refreshTtl } = jwtConfig();
+  const { refreshSecret, refreshTtl } = jwtConfig();
 
   // Before jwt.verify, so `undefined` never reaches it. Its own error for that
   // input is "jwt must be provided", which would land in the same catch below
@@ -1565,16 +1689,8 @@ export async function refresh(token, { ip, userAgent } = {}) {
 
   // Same claims login() signs, from the row just read, so a role change takes
   // effect within one access-token lifetime instead of at the end of the session.
-  const accessToken = jwt.sign(
-    {
-      sub: row.id,
-      email: row.email,
-      role: row.role,
-      type: TOKEN_TYPE.ACCESS,
-    },
-    accessSecret,
-    { expiresIn: accessTtl, jwtid: randomUUID(), algorithm: JWT_ALGORITHM },
-  );
+  // One helper for both, for the reason in signAccessToken()'s comment.
+  const accessToken = signAccessToken(row);
 
   const newJti = randomUUID();
 
@@ -2304,6 +2420,8 @@ export async function verifyEmail({ token }) {
 export default {
   register,
   generateToken,
+  signAccessToken,
+  getProfile,
   login,
   refresh,
   logout,

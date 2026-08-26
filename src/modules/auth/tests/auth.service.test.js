@@ -205,6 +205,8 @@ const { logger } = await import('../../../middlewares/logging.middleware.js');
 const {
   register,
   generateToken,
+  signAccessToken,
+  getProfile,
   login,
   refresh,
   logout,
@@ -526,6 +528,138 @@ describe('register — privileged roles', () => {
   it('allows INSTRUCTOR', async () => {
     const user = await register({ ...VALID, role: UserRole.INSTRUCTOR });
     expect(user.role).toBe(UserRole.INSTRUCTOR);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// signAccessToken() and getProfile() — task 3.9
+//
+// Both were added to the SERVICE by the controller task, so they sit here rather
+// than in auth.routes.test.js — which mocks this module wholesale and therefore
+// cannot see either one's real behaviour. signAccessToken() is already exercised
+// indirectly by every login and refresh token assertion below (that is what makes
+// the extraction safe); these tests cover the third caller's shape and the two
+// deployment faults, which no caller reaches.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** A row as PROFILE_FIELDS selects it — the shape getProfile() resolves. */
+const PROFILE_ROW = Object.freeze({
+  id: '11111111-2222-3333-4444-555555555555',
+  fullName: 'Ada Lovelace',
+  email: 'ada@example.com',
+  role: UserRole.STUDENT,
+  isEmailVerified: true,
+  avatarUrl: null,
+  bio: null,
+  createdAt: new Date('2026-01-02T03:04:05.000Z'),
+});
+
+describe('signAccessToken', () => {
+  it('signs the same claim set login() and refresh() were signing inline', () => {
+    const claims = jwt.verify(signAccessToken(PROFILE_ROW), ACCESS_SECRET);
+
+    expect(claims.sub).toBe(PROFILE_ROW.id);
+    expect(claims.email).toBe(PROFILE_ROW.email);
+    expect(claims.role).toBe(UserRole.STUDENT);
+    expect(claims.type).toBe('access');
+    expect(claims.exp - claims.iat).toBe(15 * 60);
+  });
+
+  it('accepts a data.user object — the register controller has no other row', () => {
+    // The 201 body is composed from register()'s return value, which carries
+    // PUBLIC_USER_FIELDS and no passwordHash. If this helper ever needed a column
+    // that shape lacks, task 3.9's controller would mint a token with an undefined
+    // claim and nothing would notice until requireAuth read it.
+    const { id, email, role } = PROFILE_ROW;
+    const claims = jwt.verify(
+      signAccessToken({ id, email, role }),
+      ACCESS_SECRET,
+    );
+
+    expect(claims.sub).toBe(id);
+    expect(claims.email).toBe(email);
+    expect(claims.role).toBe(role);
+  });
+
+  it('gives every token its own jti', () => {
+    const a = jwt.verify(signAccessToken(PROFILE_ROW), ACCESS_SECRET);
+    const b = jwt.verify(signAccessToken(PROFILE_ROW), ACCESS_SECRET);
+
+    expect(a.jti).not.toBe(b.jti);
+  });
+
+  it('is signed with the ACCESS key alone, so a refresh key cannot verify it', () => {
+    const token = signAccessToken(PROFILE_ROW);
+
+    expect(() => jwt.verify(token, REFRESH_SECRET)).toThrow(
+      /invalid signature/,
+    );
+  });
+
+  it('refuses to sign when the two secrets are identical', () => {
+    process.env.JWT_REFRESH_SECRET = ACCESS_SECRET;
+
+    expect(() => signAccessToken(PROFILE_ROW)).toThrow(/identical/);
+  });
+
+  it('refuses to sign when JWT_SECRET is absent', () => {
+    delete process.env.JWT_SECRET;
+
+    expect(() => signAccessToken(PROFILE_ROW)).toThrow(/must be set/);
+  });
+});
+
+describe('getProfile', () => {
+  beforeEach(() => {
+    findUnique.mockResolvedValue({ ...PROFILE_ROW });
+  });
+
+  it('returns the row apidoc §8.2 calls data.user', async () => {
+    await expect(getProfile(PROFILE_ROW.id)).resolves.toEqual(PROFILE_ROW);
+  });
+
+  it('scopes the lookup to a live row', async () => {
+    await getProfile(PROFILE_ROW.id);
+
+    expect(findUnique.mock.calls[0][0].where).toEqual({
+      id: PROFILE_ROW.id,
+      deletedAt: null,
+    });
+  });
+
+  it('selects the profile columns and nothing else', async () => {
+    await getProfile(PROFILE_ROW.id);
+    const { select } = findUnique.mock.calls[0][0];
+
+    expect(Object.keys(select).sort()).toEqual([
+      'avatarUrl',
+      'bio',
+      'createdAt',
+      'email',
+      'fullName',
+      'id',
+      'isEmailVerified',
+      'role',
+    ]);
+    // Named individually, because the list above is the assertion that changes
+    // when 10.6 adds a field and these three are the ones that must not appear
+    // whatever else does: the hash, and the two flags requireAuth owns.
+    expect(select.passwordHash).toBeUndefined();
+    expect(select.isBanned).toBeUndefined();
+    expect(select.deletedAt).toBeUndefined();
+  });
+
+  it('throws 404, not 401, when the row is gone', async () => {
+    // Reachable without a bug: an access token stays valid for its full 15
+    // minutes, so a deleted account can present one. The credential is genuine
+    // and the resource is absent, which is apidoc §5's 404 row.
+    findUnique.mockResolvedValue(null);
+
+    const err = await getProfile(PROFILE_ROW.id).catch((e) => e);
+
+    expect(err.statusCode).toBe(404);
+    expect(err.isOperational).toBe(true);
+    expect(err.message).toBe(MESSAGES.COMMON.NOT_FOUND);
   });
 });
 

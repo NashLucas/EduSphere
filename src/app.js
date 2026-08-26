@@ -42,12 +42,15 @@
 //
 // ── What is a placeholder here, and what is finished ─────────────────────────
 //
-// Task 2.1 owns the ORDER. One slot below is still marked TODO because the module
-// that fills it is a later task: the /api/v1 router. It is already in its correct
-// position, so that task adds a module and an import — it must not move a line.
-// Tasks 2.4, 2.5 and 2.7 filled their slots exactly that way: the global rate
-// limiter, the redacting request logger and /health's live dependency check now sit
-// where their TODOs stood.
+// Nothing is a placeholder any more. Task 2.1 owned the ORDER and left four slots
+// marked TODO for the modules that would fill them; tasks 2.4, 2.5, 2.7 and now
+// 3.9 filled all four in place — the global rate limiter, the redacting request
+// logger, /health's live dependency check and the /api/v1 router each sit exactly
+// where its TODO stood, and none of them moved a line of the order around it.
+//
+// One mount is still missing rather than deferred: /api-docs, which task 4.8 adds
+// with the swagger-jsdoc generator. It has no slot here because it has no ordering
+// constraint to preserve.
 //
 // The 404 and error handlers are wired here because this task's middleware order
 // ends with them. Task 2.3 has landed, so they no longer hold inline envelopes:
@@ -86,6 +89,7 @@ import { NotFoundError, normalizeError } from './utils/app-error.js';
 import { error as sendErrorEnvelope } from './utils/api-response.js';
 import { globalRateLimiter } from './middlewares/rate-limit.middleware.js';
 import { httpLogger } from './middlewares/logging.middleware.js';
+import apiRouter from './routes/v1.js';
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -288,7 +292,15 @@ app.use(cookieParser());
 // exist yet — a limiter has to sit where its routes are.
 app.use(globalRateLimiter);
 
-// TODO: app.use('/api/v1', apiRouter) once the first router exists (2.x).
+// Every feature module hangs off this one mount (task 3.9). The prefix lives here
+// and not inside the router so that a v2 is a second file mounted beside the
+// first; src/routes/v1.js registers '/auth', not '/api/v1/auth'.
+//
+// Below the limiter and below both parsers, which is where an API router has to be:
+// it needs req.body from express.json() and req.cookies from cookieParser(), and
+// its own tighter tiers (auth at 5/15 min) are applied per-route inside the module
+// routers, on top of the global 100/15 min every request has already paid.
+app.use('/api/v1', apiRouter);
 
 /**
  * 404 for anything unmatched.
