@@ -52,26 +52,23 @@
 // (task 2.4 disclosed it, along with MemoryStore not being shared between
 // instances).
 //
-// ── TWO ROUTES ARE NOT MOUNTED, AND THIS IS DELIBERATE ───────────────────────
+// ── ALL EIGHT ROUTES ARE NOW MOUNTED (task 3.10) ─────────────────────────────
 //
 // TRD:1459 and TRD:1464 guard `POST /auth/logout` and `GET /auth/me` as
-// Authenticated. That guard is `requireAuth`, which plan:351 gives to task 3.10,
-// and src/middlewares/auth.middleware.js is currently a zero-byte file. Importing
-// a name from it would crash the boot, so the two registrations sit below as
-// commented lines at their final position, exactly as app.js:291 held the
-// `/api/v1` mount until this task filled it.
+// Authenticated. That guard is `requireAuth`, which plan:351 gave to task 3.10,
+// and until it existed src/middlewares/auth.middleware.js was a zero-byte file —
+// so the two registrations sat here commented out at their final position rather
+// than mounted without a guard.
 //
-// Mounting them WITHOUT the guard was the alternative and it is worse than a
-// deferral in both cases. `GET /auth/me` cannot exist at all: `req.user` is
-// undefined, so it would answer 500 on every call. `POST /auth/logout` is worse
-// than that, because it would answer 200 while doing nothing at all — logout()
-// compares its `userId` argument against the cookie's `sub` so that one caller
-// cannot end another's session, and with `req.user` undefined that comparison
-// fails for everyone. The response would read "Logged out successfully" over a
-// live session. A route that lies is worse than a route that is missing.
-//
-// Both handlers are written and tested (see auth.controller.js's header), so 3.10
-// adds one import and uncomments two lines.
+// Task 3.10 filled that file, so both are live below and the tripwire test that
+// asserted they were unreachable has been deleted. The reasoning for the
+// deferral is kept because it is the reasoning for the ORDER they are mounted in:
+// `GET /auth/me` reads `req.user.id`, which nothing but requireAuth sets, and
+// `POST /auth/logout` compares its `userId` argument against the refresh
+// cookie's `sub` so that one caller cannot end another's session — with
+// `req.user` undefined that comparison fails for everyone and the route would
+// answer "Logged out successfully" over a live session. Neither handler may ever
+// be reachable without the guard ahead of it.
 //
 // ── THE COOKIE'S Secure FLAG DEPENDS ON NODE_ENV BEING SET ───────────────────
 //
@@ -90,6 +87,7 @@
 import { Router } from 'express';
 
 import { MESSAGES } from '../../config/system_messages.js';
+import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { logger } from '../../middlewares/logging.middleware.js';
 import { authRateLimiter } from '../../middlewares/rate-limit.middleware.js';
 import { validate } from '../../middlewares/validate.middleware.js';
@@ -97,6 +95,8 @@ import { UnauthorizedError } from '../../utils/app-error.js';
 import {
   forgotPasswordHandler,
   loginHandler,
+  logoutHandler,
+  meHandler,
   refreshHandler,
   registerHandler,
   resetPasswordHandler,
@@ -581,70 +581,71 @@ router.post(
 
 // ── The two Authenticated routes — task 3.10 ─────────────────────────────────
 //
-// See the header for why these are not mounted yet and why mounting them without
-// requireAuth would be worse than deferring them. Both handlers exist, are
-// exported from auth.controller.js and are covered by tests that supply their own
-// req.user; 3.10 adds the import and deletes the comment markers.
-//
-// The annotations are written with the routes rather than after them (plan:1033),
-// but they are commented out too: swagger-jsdoc would otherwise publish two
-// endpoints that answer 404, which is worse documentation than none.
-//
-// import { requireAuth } from '../../middlewares/auth.middleware.js';
-// import { logoutHandler, meHandler } from './auth.controller.js';
-//
-// /**
-//  * @openapi
-//  * /auth/logout:
-//  *   post:
-//  *     summary: Revoke the current refresh session
-//  *     description: |
-//  *       Unlinks `session:<jti>` and removes that jti from
-//  *       `session:index:<userId>`, then clears the cookie with the same
-//  *       Path=/api/v1/auth it was set with. Requires an Origin/Referer match
-//  *       (TRD §7.1). Idempotent: logging out twice is a 200 both times.
-//  *     tags: [Authentication]
-//  *     responses:
-//  *       200:
-//  *         description: Session revoked, or there was none to revoke.
-//  *         content:
-//  *           application/json:
-//  *             schema:
-//  *               type: object
-//  *               properties:
-//  *                 status: { type: string, example: success }
-//  *                 message: { type: string, example: Logged out successfully }
-//  *                 data: { type: object, nullable: true, example: null }
-//  *       401:
-//  *         description: No access token, or a foreign origin.
-//  */
-// router.post('/logout', requireAuth, requireSameOrigin, logoutHandler);
-//
-// /**
-//  * @openapi
-//  * /auth/me:
-//  *   get:
-//  *     summary: Read the authenticated account's own profile
-//  *     tags: [Authentication]
-//  *     responses:
-//  *       200:
-//  *         description: The caller's profile.
-//  *         content:
-//  *           application/json:
-//  *             schema:
-//  *               type: object
-//  *               properties:
-//  *                 status: { type: string, example: success }
-//  *                 message: { type: string, example: Operation completed successfully }
-//  *                 data:
-//  *                   type: object
-//  *                   properties:
-//  *                     user: { $ref: '#/components/schemas/AuthProfile' }
-//  *       401:
-//  *         description: Missing, invalid or expired access token.
-//  *       404:
-//  *         description: The account was deleted while the access token was still valid.
-//  */
-// router.get('/me', requireAuth, meHandler);
+// requireAuth ahead of both, for the reason in the header. On /auth/logout it
+// runs BEFORE the origin guard, so that a request with no credential is refused
+// by the cheaper of the two checks either way and the 401 does not depend on
+// which header the caller omitted.
+
+/**
+ * @openapi
+ * /auth/logout:
+ *   post:
+ *     summary: Revoke the current refresh session
+ *     description: |
+ *       Unlinks `session:<jti>` and removes that jti from
+ *       `session:index:<userId>`, then clears the cookie with the same
+ *       Path=/api/v1/auth it was set with. Requires an Origin/Referer match
+ *       (TRD §7.1). Idempotent: logging out twice is a 200 both times.
+ *     tags: [Authentication]
+ *     responses:
+ *       200:
+ *         description: Session revoked, or there was none to revoke.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status: { type: string, example: success }
+ *                 message: { type: string, example: Logged out successfully }
+ *                 data: { type: object, nullable: true, example: null }
+ *       401:
+ *         description: No access token, or a foreign origin.
+ *       403:
+ *         description: The account is banned or soft-deleted.
+ *       503:
+ *         description: The authorization state could not be read.
+ */
+router.post('/logout', requireAuth, requireSameOrigin, logoutHandler);
+
+/**
+ * @openapi
+ * /auth/me:
+ *   get:
+ *     summary: Read the authenticated account's own profile
+ *     tags: [Authentication]
+ *     responses:
+ *       200:
+ *         description: The caller's profile.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status: { type: string, example: success }
+ *                 message: { type: string, example: Operation completed successfully }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user: { $ref: '#/components/schemas/AuthProfile' }
+ *       401:
+ *         description: Missing, invalid or expired access token.
+ *       403:
+ *         description: The account is banned or soft-deleted.
+ *       404:
+ *         description: The account was deleted while the access token was still valid.
+ *       503:
+ *         description: The authorization state could not be read.
+ */
+router.get('/me', requireAuth, meHandler);
 
 export default router;

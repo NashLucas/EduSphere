@@ -196,6 +196,54 @@ export const TOKEN = Object.freeze({
   LENGTH: TOKEN_BYTES * 2, // hex is two characters per byte
 });
 
+// ── JWT parameters (TRD §6.1, §7.1) ──────────────────────────────────────────
+//
+// Both of these lived in auth.service.js until task 3.10, which is when they
+// acquired a second reader: requireAuth VERIFIES what signAccessToken MINTS, from a
+// different file. A duplicated pair is the drift hazard signAccessToken's own
+// comment names — "a token signed with the wrong `type` claim is refused by nothing
+// until requireAuth reads it" — so the constants moved here, where a change is a
+// change for both sides at once.
+//
+// The middleware is why they are here and not exported from the auth service:
+// requireAuth guards every module, and pointing platform-wide infrastructure at one
+// module's service would put the whole auth service (bcrypt, Prisma, the email
+// client) into the import graph of every route file that only wanted a guard. This
+// module is dependency-free by design — see the header.
+
+/**
+ * The single algorithm either JWT key is ever accepted under.
+ *
+ * Pinned on every verify, and measured to be load-bearing. Without it, a token
+ * whose header says HS512 and whose signature is a correct HS512 MAC over the
+ * same secret VERIFIES — jsonwebtoken trusts the header's `alg` when given no
+ * list. With it the same token is refused as "invalid algorithm".
+ *
+ * Not, as the usual telling has it, a defence against `alg:none`: jsonwebtoken 9
+ * refuses an unsigned token unaided, with or without this list (also measured).
+ * The real exposure is algorithm substitution, and the pin closes it by leaving
+ * exactly one algorithm the header is allowed to name.
+ *
+ * Stated on the sign calls too, where it is already jsonwebtoken's default. That
+ * is the point: a reader should not have to know the library's default to see
+ * that what this application signs and what it accepts are the same one algorithm.
+ */
+export const JWT_ALGORITHM = 'HS256';
+
+/**
+ * The `type` claim carried by each of the two token kinds.
+ *
+ * Secondary to the two signing keys, never a substitute: an access token presented
+ * to `POST /auth/refresh` fails on the SIGNATURE before its `type` is read, and a
+ * refresh token presented as a Bearer fails the same way (both measured). The claim
+ * is the belt behind those braces — it is what makes a mint/verify mismatch a 401
+ * at the door rather than a token that works in the wrong half of the system.
+ */
+export const TOKEN_TYPE = Object.freeze({
+  ACCESS: 'access',
+  REFRESH: 'refresh',
+});
+
 // ── Rate-limit tiers (apidoc §4, TRD §7) ─────────────────────────────────────
 //
 // The three tiers task 2.4 wires into express-rate-limit, each keyed on req.ip

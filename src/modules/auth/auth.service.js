@@ -886,7 +886,13 @@ import jwt from 'jsonwebtoken';
 
 import prisma from '../../database/index.js';
 import redis from '../../config/redis.js';
-import { BCRYPT_ROUNDS, TOKEN, UserRole } from '../../config/constants.js';
+import {
+  BCRYPT_ROUNDS,
+  JWT_ALGORITHM,
+  TOKEN,
+  TOKEN_TYPE,
+  UserRole,
+} from '../../config/constants.js';
 import { MESSAGES } from '../../config/system_messages.js';
 import {
   BadRequestError,
@@ -1093,11 +1099,13 @@ export async function register({ fullName, email, password, role }) {
 const DEFAULT_ACCESS_TTL = '15m';
 const DEFAULT_REFRESH_TTL = '7d';
 
-/**
- * The `type` claim. Secondary to the two signing keys, never a substitute — see
- * the header.
- */
-const TOKEN_TYPE = Object.freeze({ ACCESS: 'access', REFRESH: 'refresh' });
+// TOKEN_TYPE (the `type` claim) and JWT_ALGORITHM (the one accepted algorithm)
+// were declared here until task 3.10 gave them a second reader: requireAuth
+// verifies from src/middlewares/ what this module signs. Both now live in
+// config/constants.js and are imported above, so the mint and the verify cannot
+// drift apart. The reasoning that was attached to each moved with it; what the
+// header of THIS file says about key separation is unchanged — the claim is
+// secondary to the two signing secrets and never a substitute for them.
 
 /**
  * A real cost-12 bcrypt hash, compared against when no user matched, so that the
@@ -1113,25 +1121,6 @@ const TOKEN_TYPE = Object.freeze({ ACCESS: 'access', REFRESH: 'refresh' });
  */
 const DECOY_HASH =
   '$2a$12$FnfXIrAF1z2Qx2HtyRFNQuSUPsQo1lniV4DhiWoovJEy9FfYcNmjK';
-
-/**
- * The single algorithm either key is ever accepted under.
- *
- * Pinned on every verify, and measured to be load-bearing. Without it, a token
- * whose header says HS512 and whose signature is a correct HS512 MAC over the
- * same secret VERIFIES — jsonwebtoken trusts the header's `alg` when given no
- * list. With it the same token is refused as "invalid algorithm".
- *
- * Not, as the usual telling has it, a defence against `alg:none`: jsonwebtoken 9
- * refuses an unsigned token unaided, with or without this list (also measured).
- * The real exposure is algorithm substitution, and the pin closes it by leaving
- * exactly one algorithm the header is allowed to name.
- *
- * Stated on the sign calls too, where it is already jsonwebtoken's default. That
- * is the point: a reader should not have to know the library's default to see
- * that what this module signs and what it accepts are the same one algorithm.
- */
-const JWT_ALGORITHM = 'HS256';
 
 /**
  * The account columns that decide whether a caller may hold a session at all —

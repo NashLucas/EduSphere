@@ -158,9 +158,18 @@ const isolate = (...stack) => {
   return bare;
 };
 
-/** requireAuth as task 3.10 will behave, for the two handlers not yet mounted. */
+/**
+ * Stands in for requireAuth in the isolated stacks that test one route's own
+ * middleware order. Mirrors the real guard's contract as of task 3.10 -- the same
+ * three fields, frozen -- so a handler that starts reading something requireAuth
+ * does not attach fails here too.
+ */
 const asUser = (req, _res, next) => {
-  req.user = { id: USER.id, role: USER.role };
+  req.user = Object.freeze({
+    id: USER.id,
+    email: USER.email,
+    role: USER.role,
+  });
   next();
 };
 
@@ -861,19 +870,91 @@ describe('the Origin guard is mounted on refresh and nowhere else', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe('the two handlers awaiting requireAuth (task 3.10)', () => {
-  // DELETE THIS BLOCK'S FIRST TEST IN 3.10. It exists so the deferral cannot be
-  // forgotten silently: the day requireAuth lands and the two registrations are
-  // uncommented, this test fails and says why.
-  it('are not routable yet', async () => {
+describe('the two Authenticated routes (task 3.10)', () => {
+  // Task 3.9 left this block holding a tripwire named "are not routable yet",
+  // which asserted a 404 from both paths so that the deferral could not be
+  // forgotten silently. Task 3.10 landed requireAuth and uncommented the two
+  // registrations, so the tripwire was deleted and replaced by the four tests
+  // below: the routes exist, and neither is reachable without the guard.
+  //
+  // What they do NOT do is authenticate. src/middlewares/tests/
+  // auth.middleware.test.js owns the guard's behaviour against a mocked Redis
+  // and Prisma; here the only question is whether it is mounted, and an
+  // unauthenticated request answers that without either store being touched —
+  // requireAuth refuses a request with no Authorization header before it reads
+  // anything.
+
+  it('are both mounted, and both refuse an unauthenticated caller', async () => {
     const logout = await post('/api/v1/auth/logout');
     const me = await get('/api/v1/auth/me');
 
-    expect([logout.status, me.status]).toEqual([404, 404]);
+    expect([logout.status, me.status]).toEqual([401, 401]);
+    expect(logout.body).toEqual({
+      status: 'error',
+      message: MESSAGES.COMMON.UNAUTHENTICATED,
+    });
+    expect(me.body).toEqual({
+      status: 'error',
+      message: MESSAGES.COMMON.UNAUTHENTICATED,
+    });
     expect(svc.logout).not.toHaveBeenCalled();
     expect(svc.getProfile).not.toHaveBeenCalled();
   });
 
+  it('refuse a malformed Authorization header without reaching the service', async () => {
+    const headers = ['Basic abc', 'Bearer', 'token-with-no-scheme', ''];
+
+    for (const value of headers) {
+      // eslint-disable-next-line no-await-in-loop -- one shared limiter bucket.
+      const res = await get('/api/v1/auth/me').set('Authorization', value);
+
+      expect(res.status).toBe(401);
+    }
+
+    expect(svc.getProfile).not.toHaveBeenCalled();
+  });
+
+  it('put requireAuth ahead of the origin guard on /auth/logout', async () => {
+    // Both middlewares answer 401, so the MESSAGE is what identifies which one
+    // ran: a foreign origin with no credential must be refused as
+    // unauthenticated, not as an invalid session.
+    const res = await post('/api/v1/auth/logout').set(
+      'Origin',
+      'http://evil.test',
+    );
+
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe(MESSAGES.COMMON.UNAUTHENTICATED);
+  });
+
+  it('are not on the strict auth limiter', async () => {
+    // apidoc §4:140 lists six endpoints for the 5/15-min tier and neither of
+    // these is among them (constants.js:212), so seven calls from one address
+    // must all still be answered by the guard rather than by a 429. Both routes,
+    // separately: the limiter is a per-registration middleware, so covering one
+    // of them says nothing about the other.
+    for (const [i, path] of [
+      '/api/v1/auth/me',
+      '/api/v1/auth/logout',
+    ].entries()) {
+      const ip = `172.30.7.${i + 1}`;
+      const codes = [];
+
+      for (let n = 0; n < 7; n += 1) {
+        // eslint-disable-next-line no-await-in-loop -- limiter counts in order.
+        const res = await (path.endsWith('/me')
+          ? get(path, ip)
+          : post(path, ip));
+        codes.push(res.status);
+      }
+
+      expect(codes, path).toEqual([401, 401, 401, 401, 401, 401, 401]);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the two Authenticated handlers (task 3.9)', () => {
   it('logoutHandler answers 200 with data: null', async () => {
     const bare = isolate(asUser, controller.logoutHandler);
 
@@ -973,12 +1054,14 @@ describe('the swagger annotations render (plan:1033)', () => {
     });
   };
 
-  it('publishes exactly the six mounted endpoints', async () => {
+  it('publishes exactly the eight mounted endpoints', async () => {
     const spec = await build();
 
     expect(Object.keys(spec.paths).sort()).toEqual([
       '/auth/forgot-password',
       '/auth/login',
+      '/auth/logout',
+      '/auth/me',
       '/auth/refresh',
       '/auth/register',
       '/auth/reset-password',
@@ -994,15 +1077,24 @@ describe('the swagger annotations render (plan:1033)', () => {
     ).toEqual([]);
   });
 
-  it('opts every public route out of the global bearerAuth', async () => {
+  it('opts every public route out of the global bearerAuth, and no others', async () => {
     // swagger.json applies security: [{ bearerAuth: [] }] globally, so a public
     // route that forgets `security: []` documents a token it does not accept and
-    // swagger-ui sends one.
+    // swagger-ui sends one. The inverse matters just as much now that task 3.10
+    // has mounted two guarded routes: `security: []` on one of THOSE would
+    // publish an authenticated endpoint as public, and swagger-ui would stop
+    // sending the token that is the only way to call it.
+    const GUARDED = ['/auth/logout', '/auth/me'];
     const spec = await build();
 
     for (const [path, ops] of Object.entries(spec.paths)) {
       for (const [verb, op] of Object.entries(ops)) {
-        expect(op.security, `${verb} ${path}`).toEqual([]);
+        if (GUARDED.includes(path)) {
+          // Absent, so the global requirement applies unchanged.
+          expect(op.security, `${verb} ${path}`).toBeUndefined();
+        } else {
+          expect(op.security, `${verb} ${path}`).toEqual([]);
+        }
         expect(op.tags, `${verb} ${path}`).toEqual(['Authentication']);
         expect(op.summary, `${verb} ${path}`).toBeTruthy();
       }
@@ -1011,7 +1103,8 @@ describe('the swagger annotations render (plan:1033)', () => {
 
   it('documents every status code each route can answer', async () => {
     const spec = await build();
-    const codes = (p) => Object.keys(spec.paths[p].post.responses).sort();
+    const codes = (p, verb = 'post') =>
+      Object.keys(spec.paths[p][verb].responses).sort();
 
     expect(codes('/auth/register')).toEqual([
       '201',
@@ -1047,6 +1140,17 @@ describe('the swagger annotations render (plan:1033)', () => {
       '400',
       '422',
       '429',
+      '503',
+    ]);
+    // The two guarded routes (task 3.10). Neither is on a limiter, so neither
+    // documents a 429; both can 403 (banned or soft-deleted, and on /auth/logout
+    // a foreign Origin as well) and both can 503 when the state read fails.
+    expect(codes('/auth/logout')).toEqual(['200', '401', '403', '503']);
+    expect(codes('/auth/me', 'get')).toEqual([
+      '200',
+      '401',
+      '403',
+      '404',
       '503',
     ]);
   });

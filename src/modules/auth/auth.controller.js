@@ -45,16 +45,20 @@
 // nothing a reader of a controller file does not already know. Naming the handlers
 // for what they are leaves the service functions their own names.
 //
-// ── THE TWO HANDLERS NOTHING CALLS YET ───────────────────────────────────────
+// ── THE TWO HANDLERS THAT WAITED FOR A GUARD ─────────────────────────────────
 //
-// logoutHandler and meHandler are complete and unmounted. TRD:1459 and TRD:1464
-// guard both routes as Authenticated, `requireAuth` is task 3.10, and
-// src/middlewares/auth.middleware.js is an empty file — so auth.routes.js leaves
-// those two registrations marked in place instead of mounting them. The reason
-// they are written HERE anyway rather than deferred with the mount is that both
-// depend on `req.user`, and a handler is the only place that dependency is
-// visible: writing them now is what makes 3.10 a two-line change to the router
-// instead of a second pass over this file. See auth.routes.js for the full note.
+// logoutHandler and meHandler were written in task 3.9 and left unmounted, because
+// TRD:1459 and TRD:1464 guard both routes as Authenticated and
+// src/middlewares/auth.middleware.js was still an empty file. Task 3.10 wrote
+// `requireAuth` and mounted both, and no handler below changed for it: writing them
+// first is what made 3.10 two registration lines in the router rather than a second
+// pass over this file.
+//
+// Both read `req.user`, and `requireAuth` is now the only thing in the application
+// that sets it. So `req.user.id` in meHandler and `req.user.id` in logoutHandler
+// are not defensive reads — an unguarded route reaching either handler is a
+// mounting bug, and a TypeError on `undefined.id` is the correct way for that bug
+// to be loud rather than to authorize nobody as somebody.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { MESSAGES } from '../../config/system_messages.js';
@@ -153,7 +157,7 @@ export async function refreshHandler(req, res) {
 }
 
 /**
- * `POST /auth/logout` → 200 — apidoc §8.2. NOT MOUNTED YET (see the header).
+ * `POST /auth/logout` → 200 — apidoc §8.2.
  *
  * `data: null`, which is what apidoc prints for this route and not the `{}` the
  * builders default to — measured: passing null explicitly serializes as null,
@@ -224,7 +228,7 @@ export async function resetPasswordHandler(req, res) {
 }
 
 /**
- * `GET /auth/me` → 200 — apidoc §8.2. NOT MOUNTED YET (see the header).
+ * `GET /auth/me` → 200 — apidoc §8.2.
  *
  * `data.user`, matching register's and login's payloads, so one client-side reader
  * handles the user object on all three. apidoc calls this "full user profile
@@ -232,8 +236,8 @@ export async function resetPasswordHandler(req, res) {
  * chosen for that consistency.
  *
  * The query is getProfile()'s, not this handler's — TRD §3.2: controllers execute
- * no database queries. `req.user.id` is the token's `sub` as requireAuth (3.10)
- * will attach it, so this reads the account that proved identity and never a
+ * no database queries. `req.user.id` is the token's `sub`, as requireAuth attaches
+ * it (task 3.10), so this reads the account that proved identity and never a
  * client-supplied id.
  */
 export async function meHandler(req, res) {
