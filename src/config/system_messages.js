@@ -222,6 +222,15 @@ export const MESSAGES = Object.freeze({
     // the one being refused, but does not explain that ADMIN exists.
     ROLE_INVALID: 'Role must be either STUDENT or INSTRUCTOR',
   }),
+
+  // Authored — Task 4.1 subjects module messages
+  SUBJECTS: Object.freeze({
+    RETRIEVED: 'Subjects retrieved successfully',
+    COURSES_RETRIEVED: 'Courses retrieved successfully',
+    CREATED: 'Subject created successfully',
+    UPDATED: 'Subject updated successfully',
+    DELETED: 'Subject deleted successfully',
+  }),
 });
 
 export default MESSAGES;

@@ -63,6 +63,7 @@ export const TTL = Object.freeze({
   passwordReset: 15 * 60, // reset:pw:<sha256>         — 15 minutes
   courseList: 5 * 60, // cache:courses:<queryHash> — 5 minutes
   courseDetail: 10 * 60, // cache:course:<slug>       — 10 minutes
+  subjectsList: 60 * 60, // cache:subjects:list       — 1 hour
 });
 
 // `ratelimit:<scope>:<ip>` has no entry above: its window is owned by
