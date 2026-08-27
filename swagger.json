@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "EduSphere Backend API",
-    "description": "RESTful API documentation for the EduSphere E-Learning & Assessment Platform",
+    "description": "RESTful API documentation for the EduSphere E-Learning & Assessment Platform.\n\nThis committed file is a stub covering `GET /health` only. The served specification is assembled at runtime by `swagger-jsdoc` from route annotations (TRD §3.3); this file exists so the contract for the one endpoint that already has to be probeable is published rather than implied.",
     "version": "1.0.0"
   },
   "servers": [
@@ -18,6 +18,37 @@
         "scheme": "bearer",
         "bearerFormat": "JWT"
       }
+    },
+    "schemas": {
+      "HealthStatus": {
+        "type": "object",
+        "description": "Flat, deliberately not wrapped in the { status, message, data } envelope of apidoc §1. `status: \"ok\"` is the literal string asserted by AC-10 and read by the Dockerfile HEALTHCHECK; enveloping it breaks both.",
+        "required": ["status", "database", "redis", "uptime"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ok", "error"],
+            "example": "ok"
+          },
+          "database": {
+            "type": "string",
+            "description": "PostgreSQL reachability, proven by a query rather than by connection state.",
+            "enum": ["connected", "disconnected"],
+            "example": "connected"
+          },
+          "redis": {
+            "type": "string",
+            "description": "Redis reachability, proven by a PING rather than by connection state.",
+            "enum": ["connected", "disconnected"],
+            "example": "connected"
+          },
+          "uptime": {
+            "type": "number",
+            "description": "Process uptime in seconds.",
+            "example": 14250
+          }
+        }
+      }
     }
   },
   "security": [
@@ -27,26 +58,46 @@
   ],
   "paths": {
     "/health": {
+      "servers": [
+        {
+          "url": "http://localhost:3000",
+          "description": "Health probes sit outside the /api/v1 prefix, so this path overrides the root server URL. Without this override the documented URL is /api/v1/health, which no orchestrator probe will hit."
+        }
+      ],
       "get": {
         "summary": "Health Check",
-        "description": "Returns the operational status of the server.",
+        "description": "Reports backend, PostgreSQL, and Redis connectivity. Public and exempt from rate limiting so load balancers and container orchestrators are never throttled out of their own probe (apidoc §4, §8.1).",
+        "tags": ["System"],
+        "security": [],
         "responses": {
           "200": {
-            "description": "Server is healthy",
+            "description": "Server and both dependencies are reachable.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "ok"
-                    },
-                    "uptime": {
-                      "type": "number",
-                      "example": 123.45
-                    }
-                  }
+                  "$ref": "#/components/schemas/HealthStatus"
+                },
+                "example": {
+                  "status": "ok",
+                  "database": "connected",
+                  "redis": "connected",
+                  "uptime": 14250
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one dependency is unreachable. The same shape is returned with the failing key set to \"disconnected\" — a probe must be able to read which dependency failed without parsing a message string.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                },
+                "example": {
+                  "status": "error",
+                  "database": "connected",
+                  "redis": "disconnected",
+                  "uptime": 14250
                 }
               }
             }

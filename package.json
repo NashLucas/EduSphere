@@ -4,20 +4,35 @@
   "description": "EduSphere E-Learning & Assessment Platform Backend",
   "type": "module",
   "main": "src/server.js",
+  "prisma": {
+    "schema": "src/database/schema.prisma",
+    "seed": "node --env-file-if-exists=.env src/database/seed.js"
+  },
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
     "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
-    "db:seed": "node src/database/seed.js",
+    "db:seed": "node --env-file-if-exists=.env src/database/seed.js",
+    "db:reconcile": "node --env-file-if-exists=.env src/database/reconcile.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/ --ext .js",
+    "test:run": "vitest run",
+    "test:unit": "vitest run tests/unit src",
+    "test:integration": "vitest run --dir tests/integration",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
     "format": "prettier --write \"src/**/*.js\""
   },
   "dependencies": {
-    "@prisma/client": "^6.0.0",
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@aws-sdk/s3-request-presigner": "^3.1116.0",
+    "@prisma/client": "~6.19",
+    "axios": "^1.19.0",
     "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.10.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^5.0.0",
     "express-rate-limit": "^7.1.5",
@@ -33,9 +48,10 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^8.56.0",
     "prettier": "^3.1.0",
-    "prisma": "^6.0.0",
+    "prisma": "~6.19",
     "supertest": "^7.0.0",
     "vitest": "^4.0.0"
   }

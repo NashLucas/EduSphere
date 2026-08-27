@@ -35,29 +35,41 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    # Reconciled to the TRD §10.2 matrix. src/config/env.js validates these
+    # names through Zod and exits 1 on a miss, so a variable named here that the
+    # matrix does not define is not a harmless extra — REDIS_HOST/PORT/PASSWORD/
+    # DATABASE previously stood in for a required REDIS_URL, which meant the
+    # process died at boot before any assertion ran.
+    # CLOUDINARY_URL is deliberately absent: STORAGE_PROVIDER=s3 selects the
+    # AWS_* branch, and no environment needs both credential sets.
     env:
       NODE_ENV: test
-      PORT: 5000
+      PORT: 3000
       LOG_LEVEL: error
       CORS_ORIGIN: http://localhost:3000
       FRONTEND_URL: http://localhost:3000
       SWAGGER_ENABLED: false
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/edusphere_test_db?schema=public
-      REDIS_HOST: localhost
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ""
-      REDIS_DATABASE: 0
+      REDIS_URL: redis://localhost:6379
+      # The Day 15 setup reads these exact names. Supplying only DATABASE_URL
+      # makes every integration test resolve undefined.
+      DATABASE_URL_TEST: postgresql://postgres:postgres@localhost:5432/edusphere_test_db?schema=public
+      REDIS_URL_TEST: redis://localhost:6379/1
       JWT_SECRET: ci_test_jwt_access_secret_key_min_32_chars
-      JWT_EXPIRES_IN: 15m
       JWT_REFRESH_SECRET: ci_test_jwt_refresh_secret_key_min_32_chars
+      JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 7d
+      STORAGE_PROVIDER: s3
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_REGION: us-east-1
       AWS_S3_BUCKET: test-bucket
-      BREVO_API_KEY: test_api_key
-      BREVO_SENDER_EMAIL: noreply@test.local
-      BREVO_SENDER_NAME: EduSphere Test
+      EMAIL_PROVIDER: brevo
+      EMAIL_API_KEY: test_api_key
+      EMAIL_FROM: noreply@test.local
+      EMAIL_FROM_NAME: EduSphere Test
+      # The Day 11 webhook signature test cannot construct an HMAC without this.
+      EMAIL_WEBHOOK_SECRET: ci_test_webhook_hmac_secret
 
     steps:
     - name: Checkout code

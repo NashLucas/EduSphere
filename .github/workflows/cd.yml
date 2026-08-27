@@ -36,6 +36,10 @@ jobs:
 
       # Example: Deploying to a production server via SSH
       # Uncomment and configure this block when your production server is ready
+      # Port is 3000 throughout — it must match EXPOSE in the Dockerfile, the
+      # container HEALTHCHECK, PORT in .env.example, and docker-compose.yml.
+      # A published port that disagrees with the listener yields a container
+      # that starts, serves nothing reachable, and fails every probe.
       # - name: Deploy to Production
       #   uses: appleboy/ssh-action@master
       #   with:
@@ -46,10 +50,10 @@ jobs:
       #       docker pull ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest
       #       docker stop edusphere-api || true
       #       docker rm edusphere-api || true
-      #       docker run -d --name edusphere-api -p 5000:5000 --env-file .env ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest
+      #       docker run -d --name edusphere-api -p 3000:3000 --env-file .env ${{ secrets.DOCKERHUB_USERNAME }}/edusphere-backend:latest
 
       # Uncomment this when your production server is deployed
       # - name: Smoke test deployed health endpoint
       #   run: |
       #     sleep 15
-      #     curl --fail --retry 3 --retry-delay 5 http://${{ secrets.PROD_SERVER_HOST }}:5000/health
+      #     curl --fail --retry 3 --retry-delay 5 http://${{ secrets.PROD_SERVER_HOST }}:3000/health

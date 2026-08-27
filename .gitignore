@@ -27,6 +27,13 @@ logs
 *.log
 npm-debug.log*
 
+# Test artifacts
+# `npm run test:coverage` (TRD §9.1) writes the v8 text/json/html reporters
+# here. Without this entry the plan's own coverage command leaves a dozen
+# untracked files in the repository root, and the Day 16 coverage gate — the
+# first task that runs it routinely — is when they get committed.
+coverage/
+
 # OS Files
 .DS_Store
 Thumbs.db
