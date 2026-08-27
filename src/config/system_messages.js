@@ -231,6 +231,10 @@ export const MESSAGES = Object.freeze({
     UPDATED: 'Subject updated successfully',
     DELETED: 'Subject deleted successfully',
   }),
+  COURSES: Object.freeze({
+    RETRIEVED: 'Courses retrieved successfully',
+    RETRIEVED_SINGLE: 'Course retrieved successfully',
+  }),
 });
 
 export default MESSAGES;
