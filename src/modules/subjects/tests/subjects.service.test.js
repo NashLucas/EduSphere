@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import * as subjectsService from '../subjects.service.js';
 import prisma from '../../../database/index.js';
 import { getJSON, setWithTTL, deleteByPattern } from '../../../utils/cache-keys.js';
-import { ConflictError, NotFoundError } from '../../../utils/app-error.js';
 
 vi.mock('../../../database/index.js', () => ({
   default: {

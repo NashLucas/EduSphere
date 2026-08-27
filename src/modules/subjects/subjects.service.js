@@ -96,7 +96,7 @@ export async function createSubject(data) {
     });
   } catch (err) {
     if (err.code === 'P2002') {
-      throw ConflictError(`A subject with that name or slug already exists.`);
+      throw ConflictError('A subject with that name or slug already exists.');
     }
     throw err;
   }
@@ -123,7 +123,7 @@ export async function updateSubject(id, data) {
     });
   } catch (err) {
     if (err.code === 'P2002') {
-      throw ConflictError(`A subject with that name or slug already exists.`);
+      throw ConflictError('A subject with that name or slug already exists.');
     }
     throw err;
   }
