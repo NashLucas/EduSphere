@@ -89,6 +89,9 @@ export const getCourseBySlug = async (slug) => {
       deletedAt: null,
     },
     include: {
+      subject: {
+        select: { id: true, name: true, slug: true, icon: true, color: true },
+      },
       instructor: {
         select: {
           id: true,
