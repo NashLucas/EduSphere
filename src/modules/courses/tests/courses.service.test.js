@@ -63,7 +63,7 @@ describe('Courses Service', () => {
       prisma.course.findMany.mockResolvedValueOnce([]);
       prisma.course.count.mockResolvedValueOnce(0);
 
-      await coursesService.getCourses({ level: 'ALL' }, { page: 1, limit: 10, sort: 'newest' });
+      await coursesService.getCourses({ level: 'ALL_LEVELS' }, { page: 1, limit: 10, sort: 'newest' });
       expect(prisma.course.findMany).toHaveBeenCalledWith(expect.objectContaining({
         orderBy: { createdAt: 'desc' },
       }));

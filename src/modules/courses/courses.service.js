@@ -14,7 +14,7 @@ export const getCourses = async (filters, pagination) => {
   };
 
   if (filters.subject) where.subjectId = filters.subject;
-  if (filters.level && filters.level !== 'ALL') where.level = filters.level;
+  if (filters.level && filters.level !== 'ALL_LEVELS') where.level = filters.level;
   if (filters.priceMax) where.price = { lte: parseFloat(filters.priceMax) };
   if (filters.search) {
     where.OR = [
