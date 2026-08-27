@@ -121,10 +121,13 @@ export const getCourseBySlug = async (slug) => {
     ...mod,
     lessons: mod.lessons.map(lesson => {
       if (!lesson.isFreePreview) {
-        // Strip sensitive fields
-        delete lesson.content;
-        delete lesson.videoUrl;
-        delete lesson.codeSnippet;
+        // Strip sensitive fields without mutating the Prisma result.
+        // We cannot use an explicit Prisma `select` here (like we do for Quiz answers)
+        // because Prisma does not support conditional selection based on a sibling 
+        // field's value (isFreePreview). We must fetch all fields and omit them in memory.
+        // eslint-disable-next-line no-unused-vars
+        const { content, videoUrl, codeSnippet, ...rest } = lesson;
+        return rest;
       }
       return lesson;
     }),
