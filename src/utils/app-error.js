@@ -126,6 +126,8 @@ export const ValidationError = (
   message = MESSAGES.COMMON.VALIDATION_FAILED,
 ) => new AppError(message, 422, { errors });
 
+export const UnprocessableEntityError = (message) => new AppError(message, 422);
+
 /**
  * 429 — the quiz attempt cap (apidoc §5). Rate-limit 429s come from
  * express-rate-limit itself (task 2.4), not from here; this is for

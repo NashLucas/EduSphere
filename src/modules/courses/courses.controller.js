@@ -32,3 +32,42 @@ export const getCourseBySlug = async (req, res, next) => {
     next(error);
   }
 };
+
+export const createCourse = async (req, res, next) => {
+  try {
+    const userId = req.user.id; // instructor/admin ID
+    const courseData = req.body;
+    
+    const newCourse = await coursesService.createCourse(userId, courseData);
+    response.created(res, newCourse, MESSAGES.COURSES.CREATED);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateCourse = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const courseId = req.params.id;
+    const courseData = req.body;
+    const userRole = req.user.role;
+
+    const updatedCourse = await coursesService.updateCourse(userId, userRole, courseId, courseData);
+    response.success(res, updatedCourse, MESSAGES.COURSES.UPDATED);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteCourse = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const courseId = req.params.id;
+    const userRole = req.user.role;
+
+    await coursesService.deleteCourse(userId, userRole, courseId);
+    response.success(res, null, MESSAGES.COURSES.DELETED);
+  } catch (error) {
+    next(error);
+  }
+};

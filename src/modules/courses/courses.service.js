@@ -1,6 +1,6 @@
 import prisma from '../../database/index.js';
-import { NotFoundError } from '../../utils/app-error.js';
-import { getJSON, setWithTTL } from '../../utils/cache-keys.js';
+import { NotFoundError, ForbiddenError, UnprocessableEntityError } from '../../utils/app-error.js';
+import { getJSON, setWithTTL, deleteByPattern } from '../../utils/cache-keys.js';
 
 export const getCourses = async (filters, pagination) => {
   const { page, limit, sort } = pagination;
@@ -14,7 +14,7 @@ export const getCourses = async (filters, pagination) => {
   };
 
   if (filters.subject) where.subjectId = filters.subject;
-  if (filters.level && filters.level !== 'ALL') where.level = filters.level;
+  if (filters.level && filters.level !== 'ALL_LEVELS') where.level = filters.level;
   if (filters.priceMax) where.price = { lte: parseFloat(filters.priceMax) };
   if (filters.search) {
     where.OR = [
@@ -89,6 +89,9 @@ export const getCourseBySlug = async (slug) => {
       deletedAt: null,
     },
     include: {
+      subject: {
+        select: { id: true, name: true, slug: true, icon: true, color: true },
+      },
       instructor: {
         select: {
           id: true,
@@ -118,10 +121,13 @@ export const getCourseBySlug = async (slug) => {
     ...mod,
     lessons: mod.lessons.map(lesson => {
       if (!lesson.isFreePreview) {
-        // Strip sensitive fields
-        delete lesson.content;
-        delete lesson.videoUrl;
-        delete lesson.codeSnippet;
+        // Strip sensitive fields without mutating the Prisma result.
+        // We cannot use an explicit Prisma `select` here (like we do for Quiz answers)
+        // because Prisma does not support conditional selection based on a sibling 
+        // field's value (isFreePreview). We must fetch all fields and omit them in memory.
+        // eslint-disable-next-line no-unused-vars
+        const { content, videoUrl, codeSnippet, ...rest } = lesson;
+        return rest;
       }
       return lesson;
     }),
@@ -129,3 +135,156 @@ export const getCourseBySlug = async (slug) => {
 
   return course;
 };
+
+const slugify = (text) => text.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+const getInstructorId = async (userId) => {
+  const profile = await prisma.instructor.findUnique({ where: { userId } });
+  if (!profile) throw ForbiddenError('Instructor profile required to author courses');
+  return profile.id;
+};
+
+export const createCourse = async (userId, data) => {
+  const instructorId = await getInstructorId(userId);
+
+  const baseSlug = slugify(data.title);
+  let slug = baseSlug;
+  let counter = 1;
+  while (await prisma.course.findFirst({ where: { slug, deletedAt: null } })) {
+    slug = `${baseSlug}-${counter}`;
+    counter++;
+  }
+
+  const subject = await prisma.subject.findUnique({ where: { id: data.subjectId } });
+  if (!subject) throw NotFoundError('Subject not found');
+
+  return prisma.course.create({
+    data: {
+      ...data,
+      price: parseFloat(data.price),
+      slug,
+      instructorId,
+      isPublished: false,
+    },
+  });
+};
+
+export const updateCourse = async (userId, userRole, courseId, data) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: { instructor: true },
+  });
+  if (!course || course.deletedAt) throw NotFoundError('Course not found');
+
+  if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
+    throw ForbiddenError('Not authorized to update this course');
+  }
+
+  const { isPublished, price, title, description, level, subjectId, requirements, objectives } = data;
+  let updateData = {};
+  
+  // Note: We intentionally do NOT regenerate the slug when the title is updated 
+  // to maintain stable URLs (GET /courses/:slug) for SEO and existing bookmarks.
+  if (title !== undefined) updateData.title = title;
+  if (description !== undefined) updateData.description = description;
+  if (level !== undefined) updateData.level = level;
+  if (subjectId !== undefined) updateData.subjectId = subjectId;
+  if (price !== undefined) updateData.price = parseFloat(price);
+  if (requirements !== undefined) updateData.requirements = requirements;
+  if (objectives !== undefined) updateData.objectives = objectives;
+
+  // Publishing transition guard inside transaction to prevent race conditions
+  if (isPublished !== undefined) {
+    return await prisma.$transaction(async (tx) => {
+      const fresh = await tx.course.findUnique({ where: { id: courseId } });
+      
+      let transition = null;
+      if (isPublished && !fresh.isPublished) {
+        transition = 'to_true';
+        const modules = await tx.module.findMany({
+          where: { courseId },
+          include: { lessons: true }
+        });
+        if (modules.length === 0 || !modules.some(m => m.lessons.length > 0)) {
+          throw UnprocessableEntityError('Publish attempted with zero live modules or zero live lessons');
+        }
+        updateData.isPublished = true;
+        if (!fresh.publishedAt) {
+          updateData.publishedAt = new Date();
+        }
+      } else if (!isPublished && fresh.isPublished) {
+        transition = 'to_false';
+        updateData.isPublished = false;
+      }
+      
+      if (Object.keys(updateData).length === 0) return fresh;
+
+      const updated = await tx.course.update({
+        where: { id: courseId },
+        data: updateData
+      });
+
+      if (transition === 'to_true') {
+        await tx.subject.update({
+          where: { id: fresh.subjectId },
+          data: { courseCount: { increment: 1 } }
+        });
+        await deleteByPattern('cache:courses:*');
+      } else if (transition === 'to_false') {
+        const subject = await tx.subject.findUnique({ where: { id: fresh.subjectId } });
+        if (subject && subject.courseCount > 0) {
+          await tx.subject.update({
+            where: { id: fresh.subjectId },
+            data: { courseCount: { decrement: 1 } }
+          });
+        }
+        await deleteByPattern('cache:courses:*');
+      }
+
+      return updated;
+    });
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    return prisma.course.update({
+      where: { id: courseId },
+      data: updateData
+    });
+  }
+  return course;
+};
+
+export const deleteCourse = async (userId, userRole, courseId) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: { instructor: true },
+  });
+  if (!course || course.deletedAt) throw NotFoundError('Course not found');
+
+  if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
+    throw ForbiddenError('Not authorized to delete this course');
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const fresh = await tx.course.findUnique({ where: { id: courseId } });
+    if (!fresh || fresh.deletedAt) return;
+
+    await tx.course.update({
+      where: { id: courseId },
+      data: { deletedAt: new Date(), isPublished: false }
+    });
+
+    if (fresh.isPublished) {
+      const subject = await tx.subject.findUnique({ where: { id: fresh.subjectId } });
+      if (subject && subject.courseCount > 0) {
+        await tx.subject.update({
+          where: { id: fresh.subjectId },
+          data: { courseCount: { decrement: 1 } }
+        });
+      }
+    }
+    
+    await deleteByPattern('cache:courses:*');
+  });
+};
+

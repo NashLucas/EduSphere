@@ -234,6 +234,9 @@ export const MESSAGES = Object.freeze({
   COURSES: Object.freeze({
     RETRIEVED: 'Courses retrieved successfully',
     RETRIEVED_SINGLE: 'Course retrieved successfully',
+    CREATED: 'Course created successfully',
+    UPDATED: 'Course updated successfully',
+    DELETED: 'Course soft-deleted successfully',
   }),
 });
 

@@ -694,7 +694,6 @@ describe('the surfaces plan:352 names are still absent', () => {
   // Task 3.9 handed /auth/logout and /auth/me to 3.10 the same way.
   const surfaces = [
     { name: 'POST /enrollments', path: '/api/v1/enrollments', owner: 'Day 5' },
-    { name: 'POST /courses', path: '/api/v1/courses', owner: 'task 4.5' },
     {
       name: 'POST /quizzes/:id/submit',
       path: '/api/v1/quizzes/3f1c9d8e-0000-4000-8000-000000000009/submit',

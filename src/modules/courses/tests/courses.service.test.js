@@ -3,22 +3,41 @@ import * as coursesService from '../courses.service.js';
 import prisma from '../../../database/index.js';
 import { getJSON, setWithTTL } from '../../../utils/cache-keys.js';
 
-vi.mock('../../../database/index.js', () => ({
-  default: {
+vi.mock('../../../database/index.js', () => {
+  const prismaMock = {
     course: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       count: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
     },
-    $transaction: vi.fn(async (args) => {
-      const res = [];
-      for (const arg of args) {
-        res.push(await arg);
-      }
-      return res;
-    }),
-  }
-}));
+    instructor: {
+      findUnique: vi.fn(),
+    },
+    subject: {
+      findUnique: vi.fn(),
+      update: vi.fn(),
+    },
+    module: {
+      findMany: vi.fn(),
+    },
+  };
+  prismaMock.$transaction = vi.fn(async (args) => {
+    if (typeof args === 'function') {
+      return args(prismaMock);
+    }
+    const res = [];
+    for (const arg of args) {
+      res.push(await arg);
+    }
+    return res;
+  });
+  return {
+    default: prismaMock
+  };
+});
 
 vi.mock('../../../utils/cache-keys.js', async (importOriginal) => {
   const mod = await importOriginal();
@@ -26,6 +45,7 @@ vi.mock('../../../utils/cache-keys.js', async (importOriginal) => {
     ...mod,
     getJSON: vi.fn(),
     setWithTTL: vi.fn().mockResolvedValue(true),
+    deleteByPattern: vi.fn().mockResolvedValue(true),
   };
 });
 
@@ -63,7 +83,7 @@ describe('Courses Service', () => {
       prisma.course.findMany.mockResolvedValueOnce([]);
       prisma.course.count.mockResolvedValueOnce(0);
 
-      await coursesService.getCourses({ level: 'ALL' }, { page: 1, limit: 10, sort: 'newest' });
+      await coursesService.getCourses({ level: 'ALL_LEVELS' }, { page: 1, limit: 10, sort: 'newest' });
       expect(prisma.course.findMany).toHaveBeenCalledWith(expect.objectContaining({
         orderBy: { createdAt: 'desc' },
       }));
@@ -142,6 +162,73 @@ describe('Courses Service', () => {
       expect(res.modules[0].lessons[1].videoUrl).toBeUndefined();
       expect(res.modules[0].lessons[1].codeSnippet).toBeUndefined();
       expect(res.modules[0].lessons[1].id).toBe('l2');
+    });
+  });
+
+  describe('Write Operations', () => {
+    it('createCourse works', async () => {
+      prisma.instructor.findUnique.mockResolvedValueOnce({ id: 'inst-1' });
+      prisma.course.findFirst.mockResolvedValueOnce(null);
+      prisma.subject.findUnique.mockResolvedValueOnce({ id: 'sub-1' });
+      prisma.course.create.mockResolvedValueOnce({ id: 'course-1' });
+      
+      const res = await coursesService.createCourse('user-1', { title: 'Test', price: '10', subjectId: 'sub-1' });
+      expect(res.id).toBe('course-1');
+      expect(prisma.course.create).toHaveBeenCalled();
+    });
+
+    it('updateCourse works', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
+      await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { title: 'New' });
+      expect(prisma.course.update).toHaveBeenCalled();
+    });
+
+    it('updateCourse publish throws 422 if no lessons', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.module.findMany.mockResolvedValueOnce([]); // no modules
+      await expect(coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: true }))
+        .rejects.toMatchObject({ statusCode: 422 });
+    });
+
+    it('updateCourse publish works', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
+      // fresh course
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.module.findMany.mockResolvedValueOnce([{ lessons: [{ id: 'l1' }] }]);
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1', isPublished: true });
+      await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: true });
+      expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
+    });
+
+    it('updateCourse unpublish works', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: true });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: true, subjectId: 's1' });
+      prisma.subject.findUnique.mockResolvedValueOnce({ id: 's1', courseCount: 1 });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1', isPublished: false });
+      await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: false });
+      expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
+    });
+
+    it('deleteCourse works for unpublished course', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' } });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
+      await coursesService.deleteCourse('u1', 'INSTRUCTOR', 'c1');
+      expect(prisma.course.update).toHaveBeenCalled();
+    });
+
+    it('deleteCourse works for published course', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' } });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: true, subjectId: 's1' });
+      prisma.subject.findUnique.mockResolvedValueOnce({ id: 's1', courseCount: 1 });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
+      await coursesService.deleteCourse('u1', 'INSTRUCTOR', 'c1');
+      expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
     });
   });
 });
