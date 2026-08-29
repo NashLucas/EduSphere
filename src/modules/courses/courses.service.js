@@ -138,20 +138,14 @@ export const getCourseBySlug = async (slug) => {
 
 const slugify = (text) => text.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-const getInstructorId = async (userId, userRole) => {
-  if (userRole === 'ADMIN') {
-    const profile = await prisma.instructor.findUnique({ where: { userId } });
-    if (profile) return profile.id;
-    // Admins without an instructor profile might technically be allowed to create, 
-    // but the schema requires instructorId. We enforce having a profile.
-  }
+const getInstructorId = async (userId) => {
   const profile = await prisma.instructor.findUnique({ where: { userId } });
   if (!profile) throw ForbiddenError('Instructor profile required to author courses');
   return profile.id;
 };
 
-export const createCourse = async (userId, userRole, data) => {
-  const instructorId = await getInstructorId(userId, userRole);
+export const createCourse = async (userId, data) => {
+  const instructorId = await getInstructorId(userId);
 
   const baseSlug = slugify(data.title);
   let slug = baseSlug;

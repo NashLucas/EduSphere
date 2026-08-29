@@ -61,7 +61,7 @@ describe('Courses Controller', () => {
       coursesService.createCourse.mockResolvedValueOnce({ id: '2' });
       await coursesController.createCourse(req, res, next);
       expect(response.created).toHaveBeenCalledWith(res, { id: '2' }, MESSAGES.COURSES.CREATED);
-      expect(coursesService.createCourse).toHaveBeenCalledWith('user-1', 'INSTRUCTOR', { title: 'New Course' });
+      expect(coursesService.createCourse).toHaveBeenCalledWith('user-1', { title: 'New Course' });
     });
 
     it('updateCourse calls success', async () => {

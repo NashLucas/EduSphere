@@ -36,10 +36,9 @@ export const getCourseBySlug = async (req, res, next) => {
 export const createCourse = async (req, res, next) => {
   try {
     const userId = req.user.id; // instructor/admin ID
-    const userRole = req.user.role;
     const courseData = req.body;
     
-    const newCourse = await coursesService.createCourse(userId, userRole, courseData);
+    const newCourse = await coursesService.createCourse(userId, courseData);
     response.created(res, newCourse, MESSAGES.COURSES.CREATED);
   } catch (error) {
     next(error);

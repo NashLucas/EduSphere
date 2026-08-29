@@ -166,7 +166,7 @@ describe('Courses Service', () => {
       prisma.subject.findUnique.mockResolvedValueOnce({ id: 'sub-1' });
       prisma.course.create.mockResolvedValueOnce({ id: 'course-1' });
       
-      const res = await coursesService.createCourse('user-1', 'INSTRUCTOR', { title: 'Test', price: '10', subjectId: 'sub-1' });
+      const res = await coursesService.createCourse('user-1', { title: 'Test', price: '10', subjectId: 'sub-1' });
       expect(res.id).toBe('course-1');
       expect(prisma.course.create).toHaveBeenCalled();
     });
