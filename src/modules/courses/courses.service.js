@@ -1,6 +1,6 @@
 import prisma from '../../database/index.js';
-import { NotFoundError } from '../../utils/app-error.js';
-import { getJSON, setWithTTL } from '../../utils/cache-keys.js';
+import { NotFoundError, ForbiddenError, UnprocessableEntityError } from '../../utils/app-error.js';
+import { getJSON, setWithTTL, deleteByPattern } from '../../utils/cache-keys.js';
 
 export const getCourses = async (filters, pagination) => {
   const { page, limit, sort } = pagination;
@@ -135,3 +135,151 @@ export const getCourseBySlug = async (slug) => {
 
   return course;
 };
+
+const slugify = (text) => text.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+const getInstructorId = async (userId, userRole) => {
+  if (userRole === 'ADMIN') {
+    const profile = await prisma.instructor.findUnique({ where: { userId } });
+    if (profile) return profile.id;
+    // Admins without an instructor profile might technically be allowed to create, 
+    // but the schema requires instructorId. We enforce having a profile.
+  }
+  const profile = await prisma.instructor.findUnique({ where: { userId } });
+  if (!profile) throw ForbiddenError('Instructor profile required to author courses');
+  return profile.id;
+};
+
+export const createCourse = async (userId, userRole, data) => {
+  const instructorId = await getInstructorId(userId, userRole);
+
+  const baseSlug = slugify(data.title);
+  let slug = baseSlug;
+  let counter = 1;
+  while (await prisma.course.findFirst({ where: { slug } })) {
+    slug = `${baseSlug}-${counter}`;
+    counter++;
+  }
+
+  const subject = await prisma.subject.findUnique({ where: { id: data.subjectId } });
+  if (!subject) throw NotFoundError('Subject not found');
+
+  return prisma.course.create({
+    data: {
+      ...data,
+      price: parseFloat(data.price),
+      slug,
+      instructorId,
+      isPublished: false,
+    },
+  });
+};
+
+export const updateCourse = async (userId, userRole, courseId, data) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: { instructor: true },
+  });
+  if (!course || course.deletedAt) throw NotFoundError('Course not found');
+
+  if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
+    throw ForbiddenError('Not authorized to update this course');
+  }
+
+  const { isPublished, price, title, description, level, subjectId, requirements, objectives } = data;
+  let updateData = {};
+  if (title) updateData.title = title;
+  if (description) updateData.description = description;
+  if (level) updateData.level = level;
+  if (subjectId) updateData.subjectId = subjectId;
+  if (price !== undefined) updateData.price = parseFloat(price);
+  if (requirements !== undefined) updateData.requirements = requirements;
+  if (objectives !== undefined) updateData.objectives = objectives;
+
+  // Publishing transition guard
+  if (isPublished !== undefined && isPublished !== course.isPublished) {
+    if (isPublished) {
+      // Transitioning to true
+      const modules = await prisma.module.findMany({
+        where: { courseId, deletedAt: null },
+        include: { lessons: { where: { deletedAt: null } } }
+      });
+      if (modules.length === 0 || !modules.some(m => m.lessons.length > 0)) {
+        throw UnprocessableEntityError('Publish attempted with zero live modules or zero live lessons');
+      }
+      
+      updateData.isPublished = true;
+      if (!course.publishedAt) {
+        updateData.publishedAt = new Date();
+      }
+      
+      return await prisma.$transaction(async (tx) => {
+        const updated = await tx.course.update({
+          where: { id: courseId },
+          data: updateData
+        });
+        await tx.subject.update({
+          where: { id: course.subjectId },
+          data: { courseCount: { increment: 1 } }
+        });
+        await deleteByPattern('cache:courses:*');
+        return updated;
+      });
+    } else {
+      // Transitioning to false
+      updateData.isPublished = false;
+      return await prisma.$transaction(async (tx) => {
+        const updated = await tx.course.update({
+          where: { id: courseId },
+          data: updateData
+        });
+        await tx.subject.update({
+          where: { id: course.subjectId },
+          data: { courseCount: { decrement: 1 } }
+        });
+        await deleteByPattern('cache:courses:*');
+        return updated;
+      });
+    }
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    return prisma.course.update({
+      where: { id: courseId },
+      data: updateData
+    });
+  }
+  return course;
+};
+
+export const deleteCourse = async (userId, userRole, courseId) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: { instructor: true },
+  });
+  if (!course || course.deletedAt) throw NotFoundError('Course not found');
+
+  if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
+    throw ForbiddenError('Not authorized to delete this course');
+  }
+
+  if (course.isPublished) {
+    await prisma.$transaction(async (tx) => {
+      await tx.course.update({
+        where: { id: courseId },
+        data: { deletedAt: new Date(), isPublished: false }
+      });
+      await tx.subject.update({
+        where: { id: course.subjectId },
+        data: { courseCount: { decrement: 1 } }
+      });
+      await deleteByPattern('cache:courses:*');
+    });
+  } else {
+    await prisma.course.update({
+      where: { id: courseId },
+      data: { deletedAt: new Date() }
+    });
+  }
+};
+

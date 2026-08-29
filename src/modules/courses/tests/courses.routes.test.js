@@ -8,12 +8,16 @@ vi.mock('../courses.controller.js', () => ({
   getFeaturedCourses: vi.fn((req, res) => res.status(200).json({ status: 'success', data: 'featured' })),
   getCourseBySlug: vi.fn((req, res) => res.status(200).json({ status: 'success', data: 'slug', slug: req.params.slug })),
   getCourses: vi.fn((req, res) => res.status(200).json({ status: 'success', data: 'list' })),
+  createCourse: vi.fn(),
+  updateCourse: vi.fn(),
+  deleteCourse: vi.fn(),
 }));
 
 const app = express();
 app.use(express.json());
 app.use('/courses', coursesRoutes);
 // A global error handler to prevent supertest 500 html output
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => res.status(err.statusCode || 500).json({ error: err.message }));
 
 describe('Task 4.4: Course Route Registration Order', () => {
