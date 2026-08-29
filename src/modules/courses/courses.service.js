@@ -182,6 +182,9 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
 
   const { isPublished, price, title, description, level, subjectId, requirements, objectives } = data;
   let updateData = {};
+  
+  // Note: We intentionally do NOT regenerate the slug when the title is updated 
+  // to maintain stable URLs (GET /courses/:slug) for SEO and existing bookmarks.
   if (title !== undefined) updateData.title = title;
   if (description !== undefined) updateData.description = description;
   if (level !== undefined) updateData.level = level;
