@@ -150,7 +150,7 @@ export const createCourse = async (userId, data) => {
   const baseSlug = slugify(data.title);
   let slug = baseSlug;
   let counter = 1;
-  while (await prisma.course.findFirst({ where: { slug } })) {
+  while (await prisma.course.findFirst({ where: { slug, deletedAt: null } })) {
     slug = `${baseSlug}-${counter}`;
     counter++;
   }
