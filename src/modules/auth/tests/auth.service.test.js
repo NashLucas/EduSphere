@@ -109,13 +109,16 @@ const update = vi.fn(async () => {
  */
 let txDepth = 0;
 
+const instructorCreateMock = vi.fn().mockResolvedValue({});
+
 const prismaMock = {
   user: { findUnique, create, update },
+  instructor: { create: instructorCreateMock },
   async $transaction(callback) {
     staged = [];
     txDepth += 1;
     try {
-      const result = await callback({ user: { create } });
+      const result = await callback({ user: { create }, instructor: { create: instructorCreateMock } });
       committed.push(...staged);
       return result;
     } finally {
@@ -528,6 +531,9 @@ describe('register — privileged roles', () => {
   it('allows INSTRUCTOR', async () => {
     const user = await register({ ...VALID, role: UserRole.INSTRUCTOR });
     expect(user.role).toBe(UserRole.INSTRUCTOR);
+    expect(instructorCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { userId: user.id, title: 'Instructor' } })
+    );
   });
 });
 

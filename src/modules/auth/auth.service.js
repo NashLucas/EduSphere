@@ -104,27 +104,6 @@
 // nothing about a cookie, where login's 200 spells the cookie out — so a new
 // account holds a 15-minute credential and must log in to get a renewable one.
 //
-// ── THE INSTRUCTOR PROFILE IS NOT CREATED HERE, AND THAT IS A KNOWN GAP ──────
-//
-// plan:412 (task 4.10) requires that registering as INSTRUCTOR create the
-// `Instructor` profile row "in the same transaction", and warns that a user with
-// role INSTRUCTOR and no profile row "cannot author anything, and the failure
-// surfaces much later as a null dereference in an ownership check".
-//
-// It is still left to 4.10, because doing it now would get it wrong in a way that
-// task would have to undo. `Instructor.title` is required with no default in
-// schema.prisma, and the register body carries no title — apidoc §8.2's body is
-// fullName/email/password/role — so creating the row here means inventing a
-// default title, which is user-visible text on a public instructor profile
-// (apidoc §8.4). And plan:412's actual requirement is that registration and admin
-// elevation "must use the same helper"; the elevation call site does not exist
-// yet, so a version written here becomes the duplicate that requirement exists to
-// prevent. The insertion point is marked below.
-//
-// Until 4.10 lands, an account registered with role INSTRUCTOR has no Instructor
-// row. It is created, it can log in, and it will fail on its first authoring
-// call.
-//
 // ═════════════════════════════════════════════════════════════════════════════
 // login() — task 3.4
 // ═════════════════════════════════════════════════════════════════════════════
@@ -913,6 +892,7 @@ import {
   sendVerificationEmail,
 } from '../../integrations/email/index.js';
 import { logger } from '../../middlewares/logging.middleware.js';
+import { createInstructorProfile } from '../instructors/instructors.service.js';
 
 const log = logger.child({ module: 'auth' });
 
@@ -1037,11 +1017,9 @@ export async function register({ fullName, email, password, role }) {
         select: PUBLIC_USER_FIELDS,
       });
 
-      // TASK 4.10 GOES HERE: when `requestedRole` is INSTRUCTOR, create the
-      // Instructor profile through the shared helper that admin elevation also
-      // calls (plan:412). It belongs inside this callback so that a failure to
-      // create the profile rolls the user back rather than leaving a role with no
-      // profile. See the header for why it is not written yet.
+      if (requestedRole === UserRole.INSTRUCTOR) {
+        await createInstructorProfile(created.id, tx);
+      }
 
       try {
         await setWithTTL(verifyKey, created.id, TTL.emailVerify);
