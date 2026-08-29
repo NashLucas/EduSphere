@@ -3,7 +3,7 @@ import spec from '../../src/config/swagger.js';
 
 const HEALTH_KEYS = ['status', 'database', 'redis', 'uptime'];
 
-describe('swagger.json — GET /health (apidoc §8.1, AC-10)', () => {
+describe('swaggerSpec — GET /health (apidoc §8.1, AC-10)', () => {
   const pathItem = spec.paths?.['/health'];
   const op = pathItem?.get;
 
