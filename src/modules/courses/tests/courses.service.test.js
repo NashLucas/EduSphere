@@ -197,9 +197,12 @@ describe('Courses Service', () => {
 
     it('deleteCourse works', async () => {
       prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' } });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: true, subjectId: 's1' });
+      prisma.subject.findUnique.mockResolvedValueOnce({ id: 's1', courseCount: 1 });
       prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
       await coursesService.deleteCourse('u1', 'INSTRUCTOR', 'c1');
       expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
     });
   });
 });

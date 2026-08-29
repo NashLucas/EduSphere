@@ -231,10 +231,13 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
         });
         await deleteByPattern('cache:courses:*');
       } else if (transition === 'to_false') {
-        await tx.subject.update({
-          where: { id: fresh.subjectId },
-          data: { courseCount: { decrement: 1 } }
-        });
+        const subject = await tx.subject.findUnique({ where: { id: fresh.subjectId } });
+        if (subject && subject.courseCount > 0) {
+          await tx.subject.update({
+            where: { id: fresh.subjectId },
+            data: { courseCount: { decrement: 1 } }
+          });
+        }
         await deleteByPattern('cache:courses:*');
       }
 
@@ -262,23 +265,26 @@ export const deleteCourse = async (userId, userRole, courseId) => {
     throw ForbiddenError('Not authorized to delete this course');
   }
 
-  if (course.isPublished) {
-    await prisma.$transaction(async (tx) => {
-      await tx.course.update({
-        where: { id: courseId },
-        data: { deletedAt: new Date(), isPublished: false }
-      });
-      await tx.subject.update({
-        where: { id: course.subjectId },
-        data: { courseCount: { decrement: 1 } }
-      });
-      await deleteByPattern('cache:courses:*');
-    });
-  } else {
-    await prisma.course.update({
+  await prisma.$transaction(async (tx) => {
+    const fresh = await tx.course.findUnique({ where: { id: courseId } });
+    if (!fresh || fresh.deletedAt) return;
+
+    await tx.course.update({
       where: { id: courseId },
-      data: { deletedAt: new Date() }
+      data: { deletedAt: new Date(), isPublished: false }
     });
-  }
+
+    if (fresh.isPublished) {
+      const subject = await tx.subject.findUnique({ where: { id: fresh.subjectId } });
+      if (subject && subject.courseCount > 0) {
+        await tx.subject.update({
+          where: { id: fresh.subjectId },
+          data: { courseCount: { decrement: 1 } }
+        });
+      }
+    }
+    
+    await deleteByPattern('cache:courses:*');
+  });
 };
 
