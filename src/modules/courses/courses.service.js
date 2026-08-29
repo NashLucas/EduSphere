@@ -190,51 +190,53 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
   if (requirements !== undefined) updateData.requirements = requirements;
   if (objectives !== undefined) updateData.objectives = objectives;
 
-  // Publishing transition guard
-  if (isPublished !== undefined && isPublished !== course.isPublished) {
-    if (isPublished) {
-      // Transitioning to true
-      const modules = await prisma.module.findMany({
-        where: { courseId },
-        include: { lessons: true }
-      });
-      if (modules.length === 0 || !modules.some(m => m.lessons.length > 0)) {
-        throw UnprocessableEntityError('Publish attempted with zero live modules or zero live lessons');
-      }
+  // Publishing transition guard inside transaction to prevent race conditions
+  if (isPublished !== undefined) {
+    return await prisma.$transaction(async (tx) => {
+      const fresh = await tx.course.findUnique({ where: { id: courseId } });
       
-      updateData.isPublished = true;
-      if (!course.publishedAt) {
-        updateData.publishedAt = new Date();
-      }
-      
-      return await prisma.$transaction(async (tx) => {
-        const updated = await tx.course.update({
-          where: { id: courseId },
-          data: updateData
+      let transition = null;
+      if (isPublished && !fresh.isPublished) {
+        transition = 'to_true';
+        const modules = await tx.module.findMany({
+          where: { courseId },
+          include: { lessons: true }
         });
+        if (modules.length === 0 || !modules.some(m => m.lessons.length > 0)) {
+          throw UnprocessableEntityError('Publish attempted with zero live modules or zero live lessons');
+        }
+        updateData.isPublished = true;
+        if (!fresh.publishedAt) {
+          updateData.publishedAt = new Date();
+        }
+      } else if (!isPublished && fresh.isPublished) {
+        transition = 'to_false';
+        updateData.isPublished = false;
+      }
+      
+      if (Object.keys(updateData).length === 0) return fresh;
+
+      const updated = await tx.course.update({
+        where: { id: courseId },
+        data: updateData
+      });
+
+      if (transition === 'to_true') {
         await tx.subject.update({
-          where: { id: course.subjectId },
+          where: { id: fresh.subjectId },
           data: { courseCount: { increment: 1 } }
         });
         await deleteByPattern('cache:courses:*');
-        return updated;
-      });
-    } else {
-      // Transitioning to false
-      updateData.isPublished = false;
-      return await prisma.$transaction(async (tx) => {
-        const updated = await tx.course.update({
-          where: { id: courseId },
-          data: updateData
-        });
+      } else if (transition === 'to_false') {
         await tx.subject.update({
-          where: { id: course.subjectId },
+          where: { id: fresh.subjectId },
           data: { courseCount: { decrement: 1 } }
         });
         await deleteByPattern('cache:courses:*');
-        return updated;
-      });
-    }
+      }
+
+      return updated;
+    });
   }
 
   if (Object.keys(updateData).length > 0) {

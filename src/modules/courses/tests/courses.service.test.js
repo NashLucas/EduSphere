@@ -3,8 +3,8 @@ import * as coursesService from '../courses.service.js';
 import prisma from '../../../database/index.js';
 import { getJSON, setWithTTL } from '../../../utils/cache-keys.js';
 
-vi.mock('../../../database/index.js', () => ({
-  default: {
+vi.mock('../../../database/index.js', () => {
+  const prismaMock = {
     course: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -23,15 +23,21 @@ vi.mock('../../../database/index.js', () => ({
     module: {
       findMany: vi.fn(),
     },
-    $transaction: vi.fn(async (args) => {
-      const res = [];
-      for (const arg of args) {
-        res.push(await arg);
-      }
-      return res;
-    }),
-  }
-}));
+  };
+  prismaMock.$transaction = vi.fn(async (args) => {
+    if (typeof args === 'function') {
+      return args(prismaMock);
+    }
+    const res = [];
+    for (const arg of args) {
+      res.push(await arg);
+    }
+    return res;
+  });
+  return {
+    default: prismaMock
+  };
+});
 
 vi.mock('../../../utils/cache-keys.js', async (importOriginal) => {
   const mod = await importOriginal();
@@ -176,6 +182,17 @@ describe('Courses Service', () => {
       prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
       await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { title: 'New' });
       expect(prisma.course.update).toHaveBeenCalled();
+    });
+
+    it('updateCourse publish works', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
+      // fresh course
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.module.findMany.mockResolvedValueOnce([{ lessons: [{ id: 'l1' }] }]);
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1', isPublished: true });
+      await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: true });
+      expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
     });
 
     it('deleteCourse works', async () => {
