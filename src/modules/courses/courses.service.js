@@ -182,10 +182,10 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
 
   const { isPublished, price, title, description, level, subjectId, requirements, objectives } = data;
   let updateData = {};
-  if (title) updateData.title = title;
-  if (description) updateData.description = description;
-  if (level) updateData.level = level;
-  if (subjectId) updateData.subjectId = subjectId;
+  if (title !== undefined) updateData.title = title;
+  if (description !== undefined) updateData.description = description;
+  if (level !== undefined) updateData.level = level;
+  if (subjectId !== undefined) updateData.subjectId = subjectId;
   if (price !== undefined) updateData.price = parseFloat(price);
   if (requirements !== undefined) updateData.requirements = requirements;
   if (objectives !== undefined) updateData.objectives = objectives;
