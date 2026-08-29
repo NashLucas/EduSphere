@@ -201,8 +201,8 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
     if (isPublished) {
       // Transitioning to true
       const modules = await prisma.module.findMany({
-        where: { courseId, deletedAt: null },
-        include: { lessons: { where: { deletedAt: null } } }
+        where: { courseId },
+        include: { lessons: true }
       });
       if (modules.length === 0 || !modules.some(m => m.lessons.length > 0)) {
         throw UnprocessableEntityError('Publish attempted with zero live modules or zero live lessons');
