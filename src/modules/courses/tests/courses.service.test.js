@@ -184,6 +184,14 @@ describe('Courses Service', () => {
       expect(prisma.course.update).toHaveBeenCalled();
     });
 
+    it('updateCourse publish throws 422 if no lessons', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.module.findMany.mockResolvedValueOnce([]); // no modules
+      await expect(coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: true }))
+        .rejects.toMatchObject({ statusCode: 422 });
+    });
+
     it('updateCourse publish works', async () => {
       prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: false });
       // fresh course
@@ -195,7 +203,25 @@ describe('Courses Service', () => {
       expect(prisma.subject.update).toHaveBeenCalled();
     });
 
-    it('deleteCourse works', async () => {
+    it('updateCourse unpublish works', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' }, isPublished: true });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: true, subjectId: 's1' });
+      prisma.subject.findUnique.mockResolvedValueOnce({ id: 's1', courseCount: 1 });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1', isPublished: false });
+      await coursesService.updateCourse('u1', 'INSTRUCTOR', 'c1', { isPublished: false });
+      expect(prisma.course.update).toHaveBeenCalled();
+      expect(prisma.subject.update).toHaveBeenCalled();
+    });
+
+    it('deleteCourse works for unpublished course', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' } });
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: false, subjectId: 's1' });
+      prisma.course.update.mockResolvedValueOnce({ id: 'c1' });
+      await coursesService.deleteCourse('u1', 'INSTRUCTOR', 'c1');
+      expect(prisma.course.update).toHaveBeenCalled();
+    });
+
+    it('deleteCourse works for published course', async () => {
       prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', instructor: { userId: 'u1' } });
       prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', isPublished: true, subjectId: 's1' });
       prisma.subject.findUnique.mockResolvedValueOnce({ id: 's1', courseCount: 1 });
