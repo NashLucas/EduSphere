@@ -89,6 +89,8 @@ import { NotFoundError, normalizeError } from './utils/app-error.js';
 import { error as sendErrorEnvelope } from './utils/api-response.js';
 import { globalRateLimiter } from './middlewares/rate-limit.middleware.js';
 import { httpLogger } from './middlewares/logging.middleware.js';
+import swaggerUi from 'swagger-ui-express';
+import swaggerSpec from './config/swagger.js';
 import apiRouter from './routes/v1.js';
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
@@ -225,6 +227,42 @@ function pingWithTimeout(label, run) {
   ]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * @openapi
+ * /health:
+ *   servers:
+ *     - url: http://localhost:3000
+ *       description: Health probes sit outside the /api/v1 prefix, so this path overrides the root server URL.
+ *   get:
+ *     summary: Health Check
+ *     description: Reports backend, PostgreSQL, and Redis connectivity. Public and exempt from rate limiting so load balancers and container orchestrators are never throttled out of their own probe (apidoc §4, §8.1).
+ *     tags:
+ *       - System
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Server and both dependencies are reachable.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthStatus'
+ *             example:
+ *               status: ok
+ *               database: connected
+ *               redis: connected
+ *               uptime: 14250
+ *       503:
+ *         description: At least one dependency is unreachable.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/HealthStatus'
+ *             example:
+ *               status: error
+ *               database: connected
+ *               redis: disconnected
+ *               uptime: 14250
+ */
 app.get('/health', async (req, res) => {
   const [database, cache] = await Promise.allSettled([
     pingWithTimeout('database', () => prisma.$queryRaw`SELECT 1`),
@@ -300,6 +338,9 @@ app.use(globalRateLimiter);
 // it needs req.body from express.json() and req.cookies from cookieParser(), and
 // its own tighter tiers (auth at 5/15 min) are applied per-route inside the module
 // routers, on top of the global 100/15 min every request has already paid.
+// Mount Swagger UI
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
 app.use('/api/v1', apiRouter);
 
 /**

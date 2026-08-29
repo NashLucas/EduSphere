@@ -1,11 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-
-// swagger.json publishes exactly one contract today, and it is the one that has
-// to be right before anything else works: the Dockerfile HEALTHCHECK and every
-// orchestrator probe read these keys directly. apidoc §8.1 and AC-10 are the
-// authority — this asserts the committed file still agrees with them.
-const spec = JSON.parse(readFileSync(new URL('../../swagger.json', import.meta.url), 'utf8'));
+import spec from '../../src/config/swagger.js';
 
 const HEALTH_KEYS = ['status', 'database', 'redis', 'uptime'];
 
