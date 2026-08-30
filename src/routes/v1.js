@@ -39,11 +39,13 @@ import { Router } from 'express';
 import authRoutes from '../modules/auth/auth.routes.js';
 import subjectsRoutes from '../modules/subjects/subjects.routes.js';
 import { coursesRoutes } from '../modules/courses/courses.routes.js';
+import modulesRoutes from '../modules/modules/modules.routes.js';
 
 const apiRouter = Router();
 
 apiRouter.use('/auth', authRoutes);
 apiRouter.use('/subjects', subjectsRoutes);
 apiRouter.use('/courses', coursesRoutes);
+apiRouter.use('/modules', modulesRoutes);
 
 export default apiRouter;
