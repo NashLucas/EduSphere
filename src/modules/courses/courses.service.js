@@ -169,7 +169,7 @@ export const createCourse = async (userId, data) => {
   });
 };
 
-export const updateCourse = async (userId, userRole, courseId, data) => {
+export const verifyCourseOwnership = async (courseId, userId, userRole = null) => {
   const course = await prisma.course.findUnique({
     where: { id: courseId },
     include: { instructor: true },
@@ -177,8 +177,14 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
   if (!course || course.deletedAt) throw NotFoundError('Course not found');
 
   if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
-    throw ForbiddenError('Not authorized to update this course');
+    throw ForbiddenError('Not authorized to manage this course');
   }
+
+  return course;
+};
+
+export const updateCourse = async (userId, userRole, courseId, data) => {
+  const course = await verifyCourseOwnership(courseId, userId, userRole);
 
   const { isPublished, price, title, description, level, subjectId, requirements, objectives } = data;
   let updateData = {};
@@ -255,15 +261,7 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
 };
 
 export const deleteCourse = async (userId, userRole, courseId) => {
-  const course = await prisma.course.findUnique({
-    where: { id: courseId },
-    include: { instructor: true },
-  });
-  if (!course || course.deletedAt) throw NotFoundError('Course not found');
-
-  if (userRole !== 'ADMIN' && course.instructor.userId !== userId) {
-    throw ForbiddenError('Not authorized to delete this course');
-  }
+  const course = await verifyCourseOwnership(courseId, userId, userRole);
 
   await prisma.$transaction(async (tx) => {
     const fresh = await tx.course.findUnique({ where: { id: courseId } });

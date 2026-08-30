@@ -4,6 +4,8 @@ import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole, requireVerifiedEmail } from '../../middlewares/rbac.middleware.js';
 import { getCoursesQuerySchema, courseSlugParamSchema, courseIdParamSchema, createCourseSchema, updateCourseSchema } from './courses.schema.js';
+import * as modulesController from '../modules/modules.controller.js';
+import { createModuleSchema } from '../modules/modules.schema.js';
 
 const router = Router();
 
@@ -139,6 +141,49 @@ router.delete(
   requireRole(['INSTRUCTOR', 'ADMIN']),
   validate({ params: courseIdParamSchema }),
   coursesController.deleteCourse
+);
+
+// ----------------------------------------------------------------------------
+// Modules (Nested under courses)
+// ----------------------------------------------------------------------------
+/**
+ * @openapi
+ * /courses/{courseId}/modules:
+ *   post:
+ *     summary: Create a new module
+ *     tags: [Modules]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: courseId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - title
+ *               - orderIndex
+ *             properties:
+ *               title:
+ *                 type: string
+ *               orderIndex:
+ *                 type: integer
+ *     responses:
+ *       201:
+ *         description: Module created successfully
+ */
+router.post(
+  '/:courseId/modules',
+  requireAuth,
+  requireRole(['INSTRUCTOR', 'ADMIN']),
+  validate({ params: courseIdParamSchema, body: createModuleSchema }),
+  modulesController.createModule
 );
 
 export { router as coursesRoutes };
