@@ -1,0 +1,53 @@
+import * as lessonsService from './lessons.service.js';
+import { apiResponse } from '../../utils/api-response.js';
+
+export const createLesson = async (req, res, next) => {
+  try {
+    const moduleId = req.params.moduleId;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    
+    const lesson = await lessonsService.createLesson(userId, userRole, moduleId, req.body);
+    return res.status(201).json(apiResponse.created(lesson, 'Lesson created successfully'));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getLesson = async (req, res, next) => {
+  try {
+    const lessonId = req.params.id;
+    // Basic GET implementation for Task 5.2
+    // Full access resolution (Task 5.3) will add token, ownership, and enrollment checks here
+    const lesson = await lessonsService.getLesson(lessonId);
+    return res.status(200).json(apiResponse.success(lesson, 'Lesson fetched successfully'));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateLesson = async (req, res, next) => {
+  try {
+    const lessonId = req.params.id;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    const lesson = await lessonsService.updateLesson(userId, userRole, lessonId, req.body);
+    return res.status(200).json(apiResponse.success(lesson, 'Lesson updated successfully'));
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteLesson = async (req, res, next) => {
+  try {
+    const lessonId = req.params.id;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    await lessonsService.deleteLesson(userId, userRole, lessonId);
+    return res.status(200).json(apiResponse.success(null, 'Lesson deleted successfully'));
+  } catch (err) {
+    next(err);
+  }
+};
