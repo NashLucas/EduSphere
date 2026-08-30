@@ -4,8 +4,68 @@ import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole } from '../../middlewares/rbac.middleware.js';
 import { updateModuleSchema, moduleIdParamSchema } from './modules.schema.js';
+import * as lessonsController from '../lessons/lessons.controller.js';
+import { createLessonSchema } from '../lessons/lessons.schema.js';
 
 const router = Router();
+
+// ----------------------------------------------------------------------------
+// Lessons (Nested under modules)
+// ----------------------------------------------------------------------------
+/**
+ * @openapi
+ * /modules/{moduleId}/lessons:
+ *   post:
+ *     summary: Create a new lesson
+ *     tags: [Lessons]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: moduleId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - title
+ *               - type
+ *               - content
+ *               - orderIndex
+ *             properties:
+ *               title:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *                 enum: [VIDEO, TEXT, CODE, QUIZ]
+ *               content:
+ *                 type: string
+ *               videoUrl:
+ *                 type: string
+ *               codeSnippet:
+ *                 type: string
+ *               durationMinutes:
+ *                 type: integer
+ *               orderIndex:
+ *                 type: integer
+ *               isFreePreview:
+ *                 type: boolean
+ *     responses:
+ *       201:
+ *         description: Lesson created successfully
+ */
+router.post(
+  '/:moduleId/lessons',
+  requireAuth,
+  requireRole(['INSTRUCTOR', 'ADMIN']),
+  validate({ params: moduleIdParamSchema, body: createLessonSchema }),
+  lessonsController.createLesson
+);
 
 // PUT /modules/:id
 /**
