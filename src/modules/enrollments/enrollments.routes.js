@@ -11,7 +11,7 @@ router.use(requireAuth);
 
 /**
  * @openapi
- * /enrollments:
+ * /enrollments/me:
  *   get:
  *     summary: List user enrollments
  *     description: Retrieves the authenticated user's enrollments.
@@ -42,7 +42,7 @@ router.use(requireAuth);
  *         description: A paginated list of enrollments
  */
 router.get(
-  '/',
+  '/me',
   validate({ query: listEnrollmentsQuerySchema }),
   enrollmentsController.listEnrollments
 );
