@@ -23,6 +23,7 @@ vi.mock('../../../database/index.js', () => ({
     quizAttempt: {
       count: vi.fn(),
       create: vi.fn(),
+      findMany: vi.fn(),
     },
     enrollment: {
       findUnique: vi.fn(),
@@ -391,6 +392,51 @@ describe('Quizzes Service', () => {
       expect(result).toHaveProperty('passed', false);
       expect(result.breakdown[0]).toHaveProperty('correctAnswerIndex', 1);
       expect(result).toHaveProperty('attemptsRemaining', 0);
+    });
+  });
+
+  describe('getQuizAttempts', () => {
+    it('returns own attempts when no targetUserId is provided', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u2' } });
+      prisma.quizAttempt.findMany.mockResolvedValue([{ id: 'a1' }]);
+
+      const result = await quizzesService.getQuizAttempts({ id: 'u1', role: 'STUDENT' }, 'q1');
+
+      expect(result).toHaveLength(1);
+      expect(prisma.quizAttempt.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { quizId: 'q1', userId: 'u1' }
+      }));
+    });
+
+    it('throws 403 when trying to read another user attempts without permission', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u2' } });
+
+      await expect(quizzesService.getQuizAttempts({ id: 'u1', role: 'STUDENT' }, 'q1', 'u3'))
+        .rejects.toMatchObject({ statusCode: 403, message: 'You can only view your own attempts' });
+    });
+
+    it('returns another user attempts if caller is course owner', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizAttempt.findMany.mockResolvedValue([{ id: 'a1' }]);
+
+      const result = await quizzesService.getQuizAttempts({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'u3');
+
+      expect(result).toHaveLength(1);
+      expect(prisma.quizAttempt.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { quizId: 'q1', userId: 'u3' }
+      }));
+    });
+
+    it('returns another user attempts if caller is ADMIN', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u2' } });
+      prisma.quizAttempt.findMany.mockResolvedValue([{ id: 'a1' }]);
+
+      const result = await quizzesService.getQuizAttempts({ id: 'u1', role: 'ADMIN' }, 'q1', 'u3');
+
+      expect(result).toHaveLength(1);
+      expect(prisma.quizAttempt.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { quizId: 'q1', userId: 'u3' }
+      }));
     });
   });
 });

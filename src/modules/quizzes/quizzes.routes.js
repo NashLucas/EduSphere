@@ -3,7 +3,7 @@ import * as quizzesController from './quizzes.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole } from '../../middlewares/rbac.middleware.js';
-import { createQuizSchema, updateQuizSchema, quizIdParamSchema, batchCreateQuestionsSchema, updateQuestionSchema, questionIdParamSchema, submitQuizSchema } from './quizzes.schema.js';
+import { createQuizSchema, updateQuizSchema, quizIdParamSchema, batchCreateQuestionsSchema, updateQuestionSchema, questionIdParamSchema, submitQuizSchema, getAttemptsQuerySchema } from './quizzes.schema.js';
 
 const router = Router();
 
@@ -63,6 +63,43 @@ router.get(
   requireAuth,
   validate({ params: quizIdParamSchema }),
   quizzesController.getQuiz
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}/attempts:
+ *   get:
+ *     summary: Get quiz attempts
+ *     description: Retrieve historical attempts for a quiz.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: query
+ *         name: userId
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Quiz attempts retrieved successfully
+ *       403:
+ *         description: Forbidden (trying to read someone else's attempts)
+ *       404:
+ *         description: Quiz not found
+ */
+router.get(
+  '/:id/attempts',
+  requireAuth,
+  validate({ params: quizIdParamSchema, query: getAttemptsQuerySchema }),
+  quizzesController.getQuizAttempts
 );
 
 /**
