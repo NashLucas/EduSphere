@@ -18,7 +18,9 @@ export const setupLifecycle = async () => {
       Rules: [
         {
           ID: 'ExpireStagingUploads',
-          Prefix: 'staging/',
+          Filter: {
+            Prefix: 'staging/',
+          },
           Status: 'Enabled',
           Expiration: {
             Days: 1,
