@@ -316,4 +316,43 @@ describe('Quizzes Service', () => {
         .rejects.toMatchObject({ statusCode: 403, message: 'This quiz belongs to a locked lesson' });
     });
   });
+
+  describe('submitQuiz', () => {
+    it('throws 403 if not actively enrolled', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1' });
+      prisma.enrollment.findUnique.mockResolvedValue(null);
+
+      await expect(quizzesService.submitQuiz({ id: 'u1' }, 'q1', []))
+        .rejects.toMatchObject({ statusCode: 403, message: 'You must be actively enrolled to submit this quiz' });
+    });
+
+    it('throws 429 TooManyRequestsError if maxAttempts is reached', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', maxAttempts: 3 });
+      prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+      prisma.quizAttempt.count.mockResolvedValue(3);
+
+      await expect(quizzesService.submitQuiz({ id: 'u1' }, 'q1', []))
+        .rejects.toMatchObject({ statusCode: 429, details: { attemptsRemaining: 0 } });
+    });
+
+    it('allows submission if maxAttempts is null (unlimited)', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', maxAttempts: null });
+      prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+      prisma.quizAttempt.count.mockResolvedValue(10); // arbitrary large number
+
+      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', []);
+
+      expect(result).toHaveProperty('attemptsRemaining', null);
+    });
+
+    it('allows submission if maxAttempts is not reached', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', maxAttempts: 3 });
+      prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', []);
+
+      expect(result).toHaveProperty('attemptsRemaining', 2);
+    });
+  });
 });

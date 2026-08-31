@@ -692,25 +692,21 @@ describe('the surfaces plan:352 names are still absent', () => {
   // the entry from the list below. When the list empties, delete this block.
   //
   // Task 3.9 handed /auth/logout and /auth/me to 3.10 the same way.
-  const surfaces = [
-    {
-      name: 'POST /quizzes/:id/submit',
-      path: '/api/v1/quizzes/3f1c9d8e-0000-4000-8000-000000000009/submit',
-      owner: 'Day 6',
-    },
-  ];
+  const surfaces = [];
 
-  it.each(surfaces)(
-    '$name is unrouted (it arrives in $owner)',
-    async ({ path }) => {
-      const app = express();
-      app.use('/api/v1', apiRouter);
+  if (surfaces.length > 0) {
+    it.each(surfaces)(
+      '$name is unrouted (it arrives in $owner)',
+      async ({ path }) => {
+        const app = express();
+        app.use('/api/v1', apiRouter);
 
-      const res = await request(app).post(path);
+        const res = await request(app).post(path);
 
-      expect(res.status).toBe(404);
-    },
-  );
+        expect(res.status).toBe(404);
+      },
+    );
+  }
 
   it('and review creation is deliberately not on that list', () => {
     // TRD:1590 guards POST /courses/:courseId/reviews on ENROLLMENT, which is

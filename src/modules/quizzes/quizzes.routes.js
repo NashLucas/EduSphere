@@ -3,7 +3,7 @@ import * as quizzesController from './quizzes.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole } from '../../middlewares/rbac.middleware.js';
-import { createQuizSchema, updateQuizSchema, quizIdParamSchema, batchCreateQuestionsSchema, updateQuestionSchema, questionIdParamSchema } from './quizzes.schema.js';
+import { createQuizSchema, updateQuizSchema, quizIdParamSchema, batchCreateQuestionsSchema, updateQuestionSchema, questionIdParamSchema, submitQuizSchema } from './quizzes.schema.js';
 
 const router = Router();
 
@@ -63,6 +63,45 @@ router.get(
   requireAuth,
   validate({ params: quizIdParamSchema }),
   quizzesController.getQuiz
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}/submit:
+ *   post:
+ *     summary: Submit a quiz
+ *     description: Submit answers for grading. Enforces attempt caps.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SubmitQuiz'
+ *     responses:
+ *       200:
+ *         description: Quiz graded successfully
+ *       403:
+ *         description: Forbidden (not enrolled)
+ *       404:
+ *         description: Quiz not found
+ *       429:
+ *         description: Too Many Requests (attempt cap exhausted)
+ */
+router.post(
+  '/:id/submit',
+  requireAuth,
+  validate({ params: quizIdParamSchema, body: submitQuizSchema }),
+  quizzesController.submitQuiz
 );
 
 /**
