@@ -141,9 +141,10 @@ describe('Courses Service', () => {
       await expect(coursesService.getCourseBySlug('test')).rejects.toMatchObject({ statusCode: 404 });
     });
 
-    it('strips sensitive fields from non-preview lessons', async () => {
+    it('strips sensitive fields from non-preview lessons for anonymous users', async () => {
       const mockCourse = {
         id: '1',
+        instructor: { userId: 'inst-1' },
         modules: [
           {
             lessons: [
@@ -155,13 +156,31 @@ describe('Courses Service', () => {
       };
       prisma.course.findFirst.mockResolvedValueOnce(mockCourse);
 
-      const res = await coursesService.getCourseBySlug('test');
+      const res = await coursesService.getCourseBySlug('test', null);
       
       expect(res.modules[0].lessons[0].content).toBe('secret1');
       expect(res.modules[0].lessons[1].content).toBeUndefined();
       expect(res.modules[0].lessons[1].videoUrl).toBeUndefined();
       expect(res.modules[0].lessons[1].codeSnippet).toBeUndefined();
       expect(res.modules[0].lessons[1].id).toBe('l2');
+    });
+
+    it('does not strip sensitive fields for the course instructor', async () => {
+      const mockCourse = {
+        id: '1',
+        instructor: { userId: 'inst-1' },
+        modules: [
+          {
+            lessons: [
+              { id: 'l2', isFreePreview: false, content: 'secret2', videoUrl: 'v2' },
+            ]
+          }
+        ]
+      };
+      prisma.course.findFirst.mockResolvedValueOnce(mockCourse);
+
+      const res = await coursesService.getCourseBySlug('test', { id: 'inst-1', role: 'INSTRUCTOR' });
+      expect(res.modules[0].lessons[0].content).toBe('secret2');
     });
   });
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as coursesController from './courses.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
-import { requireAuth } from '../../middlewares/auth.middleware.js';
+import { requireAuth, optionalAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole, requireVerifiedEmail } from '../../middlewares/rbac.middleware.js';
 import { getCoursesQuerySchema, courseSlugParamSchema, courseIdParamSchema, createCourseSchema, updateCourseSchema } from './courses.schema.js';
 import * as modulesController from '../modules/modules.controller.js';
@@ -46,6 +46,7 @@ router.get(
  */
 router.get(
   '/:slug',
+  optionalAuth,
   validate({ params: courseSlugParamSchema }),
   coursesController.getCourseBySlug
 );
