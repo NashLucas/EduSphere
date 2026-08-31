@@ -84,14 +84,14 @@ describe('Quizzes Service', () => {
       expect(result.title).toBe('New Title');
     });
 
-    it('throws 404 if instructor does not own course', async () => {
+    it('throws 403 if instructor does not own course', async () => {
       prisma.quiz.findUnique.mockResolvedValue({
         id: 'q1',
         course: { instructorId: 'u2' }
       });
 
       await expect(quizzesService.updateQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', {}))
-        .rejects.toMatchObject({ statusCode: 404 });
+        .rejects.toMatchObject({ statusCode: 403 });
     });
   });
 

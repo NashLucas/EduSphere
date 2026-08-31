@@ -17,7 +17,7 @@ export const verifyQuizOwnership = async (user, quizId) => {
   }
 
   if (quiz.course.instructorId !== user.id) {
-    throw NotFoundError('Quiz not found'); // Owner-scoped 404
+    throw ForbiddenError('You do not have permission to modify this quiz');
   }
 
   return quiz;
