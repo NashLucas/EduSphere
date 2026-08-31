@@ -93,6 +93,50 @@ describe('Quizzes Service', () => {
       await expect(quizzesService.updateQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', {}))
         .rejects.toMatchObject({ statusCode: 403 });
     });
+
+    it('throws 409 if changing passingScore and attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({
+        id: 'q1',
+        passingScore: 70,
+        course: { instructorId: 'u1' }
+      });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      await expect(quizzesService.updateQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', { passingScore: 80 }))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it('allows changing passingScore if attempts do not exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({
+        id: 'q1',
+        passingScore: 70,
+        course: { instructorId: 'u1' }
+      });
+      prisma.quizAttempt.count.mockResolvedValue(0);
+      prisma.quiz.update.mockResolvedValue({ id: 'q1', passingScore: 80 });
+
+      const result = await quizzesService.updateQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', { passingScore: 80 });
+
+      expect(result.passingScore).toBe(80);
+      expect(prisma.quiz.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ passingScore: 80 })
+      }));
+    });
+
+    it('allows updating title even if attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({
+        id: 'q1',
+        passingScore: 70,
+        course: { instructorId: 'u1' }
+      });
+      // count is not even called because passingScore doesn't change
+      prisma.quiz.update.mockResolvedValue({ id: 'q1', title: 'New Title' });
+
+      const result = await quizzesService.updateQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', { title: 'New Title' });
+
+      expect(result.title).toBe('New Title');
+      expect(prisma.quizAttempt.count).not.toHaveBeenCalled();
+    });
   });
 
   describe('deleteQuiz', () => {
