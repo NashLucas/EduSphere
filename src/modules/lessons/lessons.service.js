@@ -203,3 +203,133 @@ export const deleteLesson = async (userId, userRole, lessonId) => {
     return deletedLesson;
   });
 };
+
+export const completeLesson = async (userId, lessonId) => {
+  const lesson = await prisma.lesson.findUnique({
+    where: { id: lessonId },
+    include: { module: true },
+  });
+
+  if (!lesson) {
+    throw NotFoundError('Lesson not found');
+  }
+
+  const courseId = lesson.module.courseId;
+
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { userId_courseId: { userId, courseId } }
+  });
+
+  if (!enrollment || enrollment.status !== 'ACTIVE') {
+    throw ForbiddenError('Active enrollment required to complete lesson');
+  }
+
+  // 1. Verify the lesson is unlocked
+  const { nextAccessibleLessonId, allLessons } = await calculateNextAccessibleLessonId(courseId, userId, enrollment.id);
+  
+  const requestedIndex = allLessons.findIndex(l => l.id === lessonId);
+  const nextAccessibleIndex = nextAccessibleLessonId 
+    ? allLessons.findIndex(l => l.id === nextAccessibleLessonId) 
+    : allLessons.length;
+
+  if (requestedIndex > nextAccessibleIndex) {
+    throw LockedError('Lesson is locked', { nextAccessibleLessonId });
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    // 2. Take row-level lock on enrollment (Task 6.6)
+    const [lockedEnrollment] = await tx.$queryRaw`
+      SELECT id, status FROM enrollments 
+      WHERE id = ${enrollment.id}::uuid 
+      FOR UPDATE
+    `;
+
+    if (!lockedEnrollment || lockedEnrollment.status !== 'ACTIVE') {
+      throw ForbiddenError('Active enrollment required to complete lesson');
+    }
+
+    // 3. Upsert LessonProgress
+    const progress = await tx.lessonProgress.upsert({
+      where: {
+        enrollmentId_lessonId: { enrollmentId: enrollment.id, lessonId },
+      },
+      create: {
+        enrollmentId: enrollment.id,
+        lessonId,
+        isCompleted: true,
+      },
+      update: {
+        isCompleted: true,
+      }
+    });
+
+    // 4. Recount completed vs. total
+    const totalLessons = allLessons.length;
+    let newPercent = 0.0;
+    
+    if (totalLessons > 0) {
+      const completedCount = await tx.lessonProgress.count({
+        where: { enrollmentId: enrollment.id, isCompleted: true }
+      });
+      newPercent = parseFloat(((completedCount / totalLessons) * 100).toFixed(2));
+      // Clamp to 100
+      if (newPercent > 100) newPercent = 100.0;
+    } else {
+      newPercent = 100.0;
+    }
+
+    // 5. Update Streak
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+
+    const streak = await tx.userStreak.findUnique({ where: { userId } });
+    if (!streak) {
+      await tx.userStreak.create({
+        data: {
+          userId,
+          currentStreak: 1,
+          longestStreak: 1,
+          lastActiveDate: todayStart,
+        }
+      });
+    } else {
+      const lastActive = streak.lastActiveDate ? new Date(streak.lastActiveDate.getTime()) : null;
+      if (!lastActive || lastActive.getTime() < yesterdayStart.getTime()) {
+        await tx.userStreak.update({
+          where: { userId },
+          data: {
+            currentStreak: 1,
+            longestStreak: Math.max(1, streak.longestStreak),
+            lastActiveDate: todayStart,
+          }
+        });
+      } else if (lastActive.getTime() === yesterdayStart.getTime()) {
+        const newStreak = streak.currentStreak + 1;
+        await tx.userStreak.update({
+          where: { userId },
+          data: {
+            currentStreak: newStreak,
+            longestStreak: Math.max(newStreak, streak.longestStreak),
+            lastActiveDate: todayStart,
+          }
+        });
+      } // If today, no-op
+    }
+
+    // 6. Write enrollment.progressPercent and check completion
+    const enrollmentData = { progressPercent: newPercent };
+    
+    if (newPercent >= 100.0) {
+      enrollmentData.status = 'COMPLETED';
+      enrollmentData.completedAt = new Date();
+    }
+
+    await tx.enrollment.update({
+      where: { id: enrollment.id },
+      data: enrollmentData
+    });
+
+    return progress;
+  });
+};

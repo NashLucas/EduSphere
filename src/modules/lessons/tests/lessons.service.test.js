@@ -13,7 +13,20 @@ const mockTx = {
   course: {
     update: vi.fn(),
   },
+  lessonProgress: {
+    upsert: vi.fn(),
+    count: vi.fn(),
+  },
+  userStreak: {
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
+  enrollment: {
+    update: vi.fn(),
+  },
   $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
 };
 
 vi.mock('../../../database/index.js', () => ({
@@ -23,6 +36,19 @@ vi.mock('../../../database/index.js', () => ({
     },
     lesson: {
       findUnique: vi.fn(),
+      findMany: vi.fn(),
+    },
+    lessonProgress: {
+      findMany: vi.fn(),
+    },
+    enrollment: {
+      findUnique: vi.fn(),
+    },
+    quiz: {
+      findUnique: vi.fn(),
+    },
+    quizAttempt: {
+      count: vi.fn(),
     },
     $transaction: vi.fn(async (cb) => cb(mockTx)),
   },
@@ -114,6 +140,61 @@ describe('Lessons Service', () => {
       });
       expect(mockTx.lesson.delete).toHaveBeenCalledWith({ where: { id: 'les-1' } });
       expect(mockTx.$executeRaw).toHaveBeenCalled();
+    });
+  });
+
+  describe('completeLesson', () => {
+    it('throws 403 if enrollment is missing or inactive', async () => {
+      prisma.lesson.findUnique.mockResolvedValueOnce({ id: 'l1', module: { courseId: 'c1' } });
+      prisma.enrollment.findUnique.mockResolvedValueOnce(null);
+
+      await expect(lessonsService.completeLesson('u1', 'l1'))
+        .rejects.toMatchObject({ statusCode: 403 });
+    });
+
+    it('throws 423 if lesson is locked', async () => {
+      prisma.lesson.findUnique.mockResolvedValueOnce({ id: 'l1', module: { courseId: 'c1' } });
+      prisma.enrollment.findUnique.mockResolvedValueOnce({ id: 'e1', status: 'ACTIVE' });
+      prisma.lesson.findMany.mockResolvedValueOnce([
+        { id: 'l0', type: 'VIDEO' },
+        { id: 'l1', type: 'VIDEO' }
+      ]);
+      prisma.lessonProgress.findMany.mockResolvedValueOnce([]); // l0 is not completed
+
+      await expect(lessonsService.completeLesson('u1', 'l1'))
+        .rejects.toMatchObject({ statusCode: 423 });
+    });
+
+    it('completes the lesson, sets progress, and increments streak', async () => {
+      prisma.lesson.findUnique.mockResolvedValueOnce({ id: 'l1', module: { courseId: 'c1' } });
+      prisma.enrollment.findUnique.mockResolvedValueOnce({ id: 'e1', status: 'ACTIVE' });
+      prisma.lesson.findMany.mockResolvedValueOnce([
+        { id: 'l1', type: 'VIDEO' }
+      ]);
+      prisma.lessonProgress.findMany.mockResolvedValueOnce([]);
+      
+      mockTx.$queryRaw.mockResolvedValueOnce([{ id: 'e1', status: 'ACTIVE' }]);
+      mockTx.lessonProgress.upsert.mockResolvedValueOnce({ id: 'lp1' });
+      mockTx.lessonProgress.count.mockResolvedValueOnce(1); // 1 / 1 = 100%
+
+      const now = new Date();
+      const yesterdayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+
+      mockTx.userStreak.findUnique.mockResolvedValueOnce({
+        userId: 'u1', currentStreak: 1, longestStreak: 1, lastActiveDate: yesterdayStart
+      });
+
+      await lessonsService.completeLesson('u1', 'l1');
+
+      expect(mockTx.lessonProgress.upsert).toHaveBeenCalled();
+      expect(mockTx.enrollment.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'e1' },
+        data: expect.objectContaining({ progressPercent: 100.0, status: 'COMPLETED' })
+      }));
+      expect(mockTx.userStreak.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { userId: 'u1' },
+        data: expect.objectContaining({ currentStreak: 2 })
+      }));
     });
   });
 });

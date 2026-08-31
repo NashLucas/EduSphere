@@ -49,3 +49,14 @@ export const deleteLesson = async (req, res, next) => {
     next(err);
   }
 };
+
+export const completeLesson = async (req, res, next) => {
+  try {
+    const lessonId = req.params.id;
+    const userId = req.user.id;
+    const progress = await lessonsService.completeLesson(userId, lessonId);
+    return res.status(200).json(apiResponse.success(progress, 'Lesson completed successfully'));
+  } catch (err) {
+    next(err);
+  }
+};
