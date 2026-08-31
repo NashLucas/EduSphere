@@ -30,3 +30,33 @@ export const deleteQuiz = async (req, res, next) => {
     next(err);
   }
 };
+
+export const addQuestions = async (req, res, next) => {
+  try {
+    const quizId = req.params.id;
+    const createdQuestions = await quizzesService.addQuestions(req.user, quizId, req.body.questions);
+    return apiResponse.created(res, createdQuestions, 'Questions added successfully');
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateQuestion = async (req, res, next) => {
+  try {
+    const { id: quizId, questionId } = req.params;
+    const updatedQuestion = await quizzesService.updateQuestion(req.user, quizId, questionId, req.body);
+    return apiResponse.success(res, updatedQuestion, 'Question updated successfully');
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteQuestion = async (req, res, next) => {
+  try {
+    const { id: quizId, questionId } = req.params;
+    await quizzesService.deleteQuestion(req.user, quizId, questionId);
+    return apiResponse.success(res, null, 'Question deleted successfully');
+  } catch (err) {
+    next(err);
+  }
+};

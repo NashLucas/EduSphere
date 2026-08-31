@@ -3,7 +3,7 @@ import * as quizzesController from './quizzes.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole } from '../../middlewares/rbac.middleware.js';
-import { createQuizSchema, updateQuizSchema, quizIdParamSchema } from './quizzes.schema.js';
+import { createQuizSchema, updateQuizSchema, quizIdParamSchema, batchCreateQuestionsSchema, updateQuestionSchema, questionIdParamSchema } from './quizzes.schema.js';
 
 const router = Router();
 
@@ -105,6 +105,126 @@ router.delete(
   requireRole(['INSTRUCTOR', 'ADMIN']),
   validate({ params: quizIdParamSchema }),
   quizzesController.deleteQuiz
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}/questions:
+ *   post:
+ *     summary: Add questions to a quiz
+ *     description: Batch creates questions. Returns 409 if attempts exist.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/BatchCreateQuestions'
+ *     responses:
+ *       201:
+ *         description: Questions added successfully
+ *       404:
+ *         description: Quiz not found
+ *       409:
+ *         description: Cannot add questions if attempts exist
+ */
+router.post(
+  '/:id/questions',
+  requireAuth,
+  requireRole(['INSTRUCTOR', 'ADMIN']),
+  validate({ params: quizIdParamSchema, body: batchCreateQuestionsSchema }),
+  quizzesController.addQuestions
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}/questions/{questionId}:
+ *   put:
+ *     summary: Update a question
+ *     description: Updates a question. Structural changes (options, correctAnswerIndex, type) return 409 if attempts exist.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: path
+ *         name: questionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateQuestion'
+ *     responses:
+ *       200:
+ *         description: Question updated successfully
+ *       404:
+ *         description: Question or Quiz not found
+ *       409:
+ *         description: Cannot change question structure if attempts exist
+ */
+router.put(
+  '/:id/questions/:questionId',
+  requireAuth,
+  requireRole(['INSTRUCTOR', 'ADMIN']),
+  validate({ params: questionIdParamSchema, body: updateQuestionSchema }),
+  quizzesController.updateQuestion
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}/questions/{questionId}:
+ *   delete:
+ *     summary: Remove a question
+ *     description: Removes a question from a quiz. Returns 409 if attempts exist.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: path
+ *         name: questionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Question deleted successfully
+ *       404:
+ *         description: Question or Quiz not found
+ *       409:
+ *         description: Cannot delete question if attempts exist
+ */
+router.delete(
+  '/:id/questions/:questionId',
+  requireAuth,
+  requireRole(['INSTRUCTOR', 'ADMIN']),
+  validate({ params: questionIdParamSchema }),
+  quizzesController.deleteQuestion
 );
 
 export default router;

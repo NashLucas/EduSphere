@@ -95,3 +95,83 @@ export const deleteQuiz = async (user, id, force = false) => {
     return deletedQuiz;
   });
 };
+
+export const addQuestions = async (user, quizId, questionsData) => {
+  await verifyQuizOwnership(user, quizId);
+
+  const attemptCount = await prisma.quizAttempt.count({ where: { quizId } });
+  if (attemptCount > 0) {
+    throw ConflictError('Cannot add questions after attempts have been made');
+  }
+
+  const createdQuestions = await prisma.quizQuestion.createMany({
+    data: questionsData.map(q => ({
+      quizId,
+      questionText: q.questionText,
+      type: q.type,
+      options: q.options,
+      correctAnswerIndex: q.correctAnswerIndex,
+      orderIndex: q.orderIndex
+    }))
+  });
+
+  return createdQuestions;
+};
+
+export const updateQuestion = async (user, quizId, questionId, data) => {
+  await verifyQuizOwnership(user, quizId);
+
+  const question = await prisma.quizQuestion.findUnique({
+    where: { id: questionId }
+  });
+
+  if (!question || question.quizId !== quizId) {
+    throw NotFoundError('Question not found in this quiz');
+  }
+
+  const attemptCount = await prisma.quizAttempt.count({ where: { quizId } });
+
+  const isStructuralChange = data.options !== undefined || data.correctAnswerIndex !== undefined || data.type !== undefined;
+
+  if (attemptCount > 0 && isStructuralChange) {
+    throw ConflictError('Cannot change question structure after attempts have been made');
+  }
+
+  const newOptions = data.options || question.options;
+  const newAnswerIndex = data.correctAnswerIndex !== undefined ? data.correctAnswerIndex : question.correctAnswerIndex;
+  const newType = data.type || question.type;
+
+  if (newType === 'TRUE_FALSE' && newOptions.length !== 2) {
+    throw ConflictError('TRUE_FALSE questions must have exactly 2 options');
+  }
+
+  if (newAnswerIndex >= newOptions.length) {
+    throw ConflictError('correctAnswerIndex must be within options bounds');
+  }
+
+  return await prisma.quizQuestion.update({
+    where: { id: questionId },
+    data
+  });
+};
+
+export const deleteQuestion = async (user, quizId, questionId) => {
+  await verifyQuizOwnership(user, quizId);
+
+  const question = await prisma.quizQuestion.findUnique({
+    where: { id: questionId }
+  });
+
+  if (!question || question.quizId !== quizId) {
+    throw NotFoundError('Question not found in this quiz');
+  }
+
+  const attemptCount = await prisma.quizAttempt.count({ where: { quizId } });
+  if (attemptCount > 0) {
+    throw ConflictError('Cannot delete questions after attempts have been made');
+  }
+
+  return await prisma.quizQuestion.delete({
+    where: { id: questionId }
+  });
+};

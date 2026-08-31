@@ -23,6 +23,12 @@ vi.mock('../../../database/index.js', () => ({
     quizAttempt: {
       count: vi.fn(),
     },
+    quizQuestion: {
+      findUnique: vi.fn(),
+      createMany: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
     $transaction: vi.fn(async (cb) => cb(mockTx)),
   },
 }));
@@ -179,6 +185,83 @@ describe('Quizzes Service', () => {
       expect(mockTx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ actionType: 'QUIZ_DELETED', targetType: 'QUIZ' })
       }));
+    });
+  });
+
+  describe('addQuestions', () => {
+    it('throws 409 if attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      await expect(quizzesService.addQuestions({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', []))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it('creates questions successfully if no attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizAttempt.count.mockResolvedValue(0);
+      prisma.quizQuestion.createMany.mockResolvedValue({ count: 2 });
+
+      const result = await quizzesService.addQuestions({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', [{
+        questionText: 'Q1', options: ['A', 'B'], correctAnswerIndex: 0, orderIndex: 1
+      }]);
+
+      expect(result).toEqual({ count: 2 });
+      expect(prisma.quizQuestion.createMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('updateQuestion', () => {
+    it('throws 409 if structural changes requested and attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findUnique.mockResolvedValue({ id: 'q2', quizId: 'q1', options: ['A', 'B'], correctAnswerIndex: 0, type: 'MULTIPLE_CHOICE' });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      await expect(quizzesService.updateQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2', { options: ['A', 'B', 'C'] }))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it('allows updating text even if attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findUnique.mockResolvedValue({ id: 'q2', quizId: 'q1', options: ['A', 'B'], correctAnswerIndex: 0, type: 'MULTIPLE_CHOICE' });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+      prisma.quizQuestion.update.mockResolvedValue({ id: 'q2', questionText: 'New text' });
+
+      await quizzesService.updateQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2', { questionText: 'New text' });
+
+      expect(prisma.quizQuestion.update).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ questionText: 'New text' })
+      }));
+    });
+
+    it('throws 409 if TRUE_FALSE type and options not 2', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findUnique.mockResolvedValue({ id: 'q2', quizId: 'q1', options: ['A', 'B', 'C'], correctAnswerIndex: 0, type: 'MULTIPLE_CHOICE' });
+      prisma.quizAttempt.count.mockResolvedValue(0);
+
+      await expect(quizzesService.updateQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2', { type: 'TRUE_FALSE' }))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+  });
+
+  describe('deleteQuestion', () => {
+    it('throws 409 if attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findUnique.mockResolvedValue({ id: 'q2', quizId: 'q1' });
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      await expect(quizzesService.deleteQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2'))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it('deletes question successfully if no attempts exist', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findUnique.mockResolvedValue({ id: 'q2', quizId: 'q1' });
+      prisma.quizAttempt.count.mockResolvedValue(0);
+
+      await quizzesService.deleteQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2');
+
+      expect(prisma.quizQuestion.delete).toHaveBeenCalledWith({ where: { id: 'q2' } });
     });
   });
 });
