@@ -358,12 +358,12 @@ describe('Quizzes Service', () => {
       prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1', correctAnswerIndex: 1 }]);
       prisma.quizAttempt.create.mockResolvedValue({ id: 'a1' });
 
-      // First try: Failed, attempts remain -> no breakdown
+      // First try: Failed, attempts remain -> no correctAnswerIndex in breakdown
       let result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', [{ questionId: 'q1', selectedIndex: 0 }]);
       
       expect(result).toHaveProperty('score', 0);
       expect(result).toHaveProperty('passed', false);
-      expect(result.breakdown).toBeUndefined();
+      expect(result.breakdown[0]).not.toHaveProperty('correctAnswerIndex');
       expect(result).toHaveProperty('attemptsRemaining', 1);
 
       // Second try: Passed, attempts remain -> has breakdown with correctAnswerIndex, calls completeLesson

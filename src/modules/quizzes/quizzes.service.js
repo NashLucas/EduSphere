@@ -327,19 +327,17 @@ export const submitQuiz = async (user, quizId, answersData) => {
   }
 
   // Task 7.7 Graduated Answer Disclosure
-  let finalBreakdown;
   if (isPassed || attemptsRemaining === 0) {
-    // Leave full breakdown including correctAnswerIndex
-    finalBreakdown = breakdown;
+    // Leave correctAnswerIndex in the breakdown
   } else {
-    // Omit the breakdown entirely so it cannot be used as an oracle
-    finalBreakdown = undefined;
+    // Remove it so it cannot be used as an oracle, but keep { questionId, isCorrect }
+    breakdown.forEach(b => delete b.correctAnswerIndex);
   }
 
   return {
     score,
     passed: isPassed,
-    ...(finalBreakdown && { breakdown: finalBreakdown }),
+    breakdown,
     attemptsRemaining,
   };
 };
