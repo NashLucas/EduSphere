@@ -213,3 +213,23 @@ export const getProgressDetail = async (userId, courseId) => {
 
   return { courseId, progressPercent: enrollment.progressPercent, nextAccessibleLessonId, modules: result };
 };
+
+export const dropEnrollment = async (userId, courseId) => {
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { userId_courseId: { userId, courseId } }
+  });
+
+  if (!enrollment) {
+    throw NotFoundError('Enrollment not found');
+  }
+
+  if (enrollment.status === 'DROPPED') {
+    return enrollment; // Idempotent
+  }
+
+  // Decrement nothing, preserve progress
+  return await prisma.enrollment.update({
+    where: { id: enrollment.id },
+    data: { status: 'DROPPED' }
+  });
+};

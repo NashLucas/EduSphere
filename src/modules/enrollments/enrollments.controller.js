@@ -35,3 +35,14 @@ export const getProgressDetail = async (req, res, next) => {
     next(error);
   }
 };
+
+export const dropEnrollment = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { courseId } = req.params;
+    const enrollment = await enrollmentsService.dropEnrollment(userId, courseId);
+    response.success(res, enrollment, 'Enrollment dropped successfully');
+  } catch (error) {
+    next(error);
+  }
+};

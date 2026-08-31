@@ -198,4 +198,36 @@ describe('Enrollments Service', () => {
       expect(lessons[2].isLocked).toBe(false); // since l2 counts as passed, l3 is next accessible
     });
   });
+
+  describe('dropEnrollment', () => {
+    it('throws 404 if enrollment does not exist', async () => {
+      prisma.enrollment.findUnique.mockResolvedValueOnce(null);
+      await expect(enrollmentsService.dropEnrollment('u1', 'c1'))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it('returns idempotently if already dropped', async () => {
+      const mockEnrollment = { id: 'e1', status: 'DROPPED' };
+      prisma.enrollment.findUnique.mockResolvedValueOnce(mockEnrollment);
+
+      const res = await enrollmentsService.dropEnrollment('u1', 'c1');
+      
+      expect(res).toEqual(mockEnrollment);
+      expect(prisma.enrollment.update).not.toHaveBeenCalled();
+    });
+
+    it('sets status to DROPPED without decrementing counts', async () => {
+      prisma.enrollment.findUnique.mockResolvedValueOnce({ id: 'e1', status: 'ACTIVE' });
+      prisma.enrollment.update.mockResolvedValueOnce({ id: 'e1', status: 'DROPPED' });
+
+      await enrollmentsService.dropEnrollment('u1', 'c1');
+
+      expect(prisma.enrollment.update).toHaveBeenCalledWith({
+        where: { id: 'e1' },
+        data: { status: 'DROPPED' }
+      });
+      expect(prisma.course.update).not.toHaveBeenCalled();
+      expect(prisma.instructor.update).not.toHaveBeenCalled();
+    });
+  });
 });
