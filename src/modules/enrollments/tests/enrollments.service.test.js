@@ -9,6 +9,9 @@ vi.mock('../../../database/index.js', () => ({
     course: { findUnique: vi.fn(), update: vi.fn() },
     instructor: { update: vi.fn() },
     enrollment: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
+    module: { findMany: vi.fn() },
+    lessonProgress: { findMany: vi.fn() },
+    quizAttempt: { groupBy: vi.fn() },
     $transaction: vi.fn(async (cb) => {
       return cb({
         enrollment: prisma.enrollment,
@@ -142,6 +145,57 @@ describe('Enrollments Service', () => {
         skip: 5,
         take: 5,
       }));
+    });
+  });
+
+  describe('getProgressDetail', () => {
+    it('throws 404 if enrollment does not exist', async () => {
+      prisma.enrollment.findUnique.mockResolvedValueOnce(null);
+      await expect(enrollmentsService.getProgressDetail('u1', 'c1'))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it('returns structured progress detail with lock state', async () => {
+      prisma.enrollment.findUnique.mockResolvedValueOnce({ id: 'e1', progressPercent: 50.0 });
+      prisma.module.findMany.mockResolvedValueOnce([
+        {
+          id: 'm1', title: 'Module 1', orderIndex: 1,
+          lessons: [
+            { id: 'l1', title: 'Lesson 1', type: 'VIDEO', orderIndex: 1 },
+            { id: 'l2', title: 'Lesson 2', type: 'QUIZ', orderIndex: 2, quiz: { id: 'q1', maxAttempts: 3 } },
+            { id: 'l3', title: 'Lesson 3', type: 'VIDEO', orderIndex: 3 }
+          ]
+        }
+      ]);
+      prisma.lessonProgress.findMany.mockResolvedValueOnce([
+        { lessonId: 'l1', isCompleted: true, updatedAt: new Date('2023-01-01') }
+      ]);
+      prisma.quizAttempt.groupBy = vi.fn().mockResolvedValueOnce([
+        { quizId: 'q1', _count: { _all: 3 } }
+      ]);
+
+      const res = await enrollmentsService.getProgressDetail('u1', 'c1');
+      expect(res.courseId).toBe('c1');
+      expect(res.progressPercent).toBe(50.0);
+      expect(res.nextAccessibleLessonId).toBe('l3');
+      expect(res.modules).toHaveLength(1);
+
+      const lessons = res.modules[0].lessons;
+      
+      // l1 is explicitly completed
+      expect(lessons[0].id).toBe('l1');
+      expect(lessons[0].isCompleted).toBe(true);
+      expect(lessons[0].isLocked).toBe(false);
+
+      // l2 is a quiz with max attempts exhausted (effectively completed for unlock purposes, but isCompleted remains false)
+      expect(lessons[1].id).toBe('l2');
+      expect(lessons[1].isCompleted).toBe(false);
+      expect(lessons[1].isLocked).toBe(false);
+
+      // l3 is the next accessible lesson, should be unlocked
+      expect(lessons[2].id).toBe('l3');
+      expect(lessons[2].isCompleted).toBe(false);
+      expect(lessons[2].isLocked).toBe(false); // since l2 counts as passed, l3 is next accessible
     });
   });
 });
