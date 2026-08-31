@@ -1,6 +1,7 @@
 import prisma from '../../database/index.js';
 import { NotFoundError, UnauthorizedError, ForbiddenError, LockedError } from '../../utils/app-error.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
+import { createNotification } from '../notifications/notifications.service.js';
 
 // Helper to recalculate progress for all ACTIVE enrollments
 const recalculateProgressForCourse = async (tx, courseId) => {
@@ -207,7 +208,7 @@ export const deleteLesson = async (userId, userRole, lessonId) => {
 export const completeLesson = async (userId, lessonId) => {
   const lesson = await prisma.lesson.findUnique({
     where: { id: lessonId },
-    include: { module: true },
+    include: { module: { include: { course: true } } },
   });
 
   if (!lesson) {
@@ -323,6 +324,61 @@ export const completeLesson = async (userId, lessonId) => {
     if (newPercent >= 100.0) {
       enrollmentData.status = 'COMPLETED';
       enrollmentData.completedAt = new Date();
+
+      // Certificate Generation
+      const randomPart = Math.random().toString(36).substring(2, 9).toUpperCase();
+      const certificateNo = `CERT-${randomPart}-${Date.now().toString(36).toUpperCase()}`;
+      await tx.certificate.create({
+        data: {
+          certificateNo,
+          userId,
+          courseId,
+        }
+      });
+
+      // Notification
+      await createNotification(
+        userId, 
+        'CERTIFICATE', 
+        'Course Completed', 
+        `Congratulations! You have completed ${lesson.module.course.title}. Your certificate is now available.`, 
+        tx
+      );
+
+      // Achievements Evaluation
+      const completedCoursesCount = await tx.enrollment.count({
+        where: { userId, status: 'COMPLETED' }
+      });
+      // We add 1 because the current enrollment is updated below
+      const thresholds = await tx.achievement.findMany({
+        where: { criteriaType: 'COURSES_COMPLETED', criteriaValue: { lte: completedCoursesCount + 1 } }
+      });
+
+      if (thresholds.length > 0) {
+        const existingEarned = await tx.userAchievement.findMany({
+          where: { userId, achievementId: { in: thresholds.map(a => a.id) } },
+          select: { achievementId: true }
+        });
+        const earnedSet = new Set(existingEarned.map(ea => ea.achievementId));
+
+        for (const threshold of thresholds) {
+          if (!earnedSet.has(threshold.id)) {
+            await tx.userAchievement.create({
+              data: {
+                userId,
+                achievementId: threshold.id
+              }
+            });
+            await createNotification(
+              userId, 
+              'ACHIEVEMENT', 
+              'New Achievement Unlocked!', 
+              `You earned the "${threshold.title}" achievement!`, 
+              tx
+            );
+          }
+        }
+      }
     }
 
     await tx.enrollment.update({

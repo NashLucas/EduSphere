@@ -24,6 +24,17 @@ const mockTx = {
   },
   enrollment: {
     update: vi.fn(),
+    count: vi.fn(),
+  },
+  certificate: {
+    create: vi.fn(),
+  },
+  achievement: {
+    findMany: vi.fn(),
+  },
+  userAchievement: {
+    findMany: vi.fn(),
+    create: vi.fn(),
   },
   $executeRaw: vi.fn(),
   $queryRaw: vi.fn(),
@@ -56,6 +67,10 @@ vi.mock('../../../database/index.js', () => ({
 
 vi.mock('../../courses/courses.service.js', () => ({
   verifyCourseOwnership: vi.fn(),
+}));
+
+vi.mock('../../notifications/notifications.service.js', () => ({
+  createNotification: vi.fn(),
 }));
 
 describe('Lessons Service', () => {
@@ -165,8 +180,8 @@ describe('Lessons Service', () => {
         .rejects.toMatchObject({ statusCode: 423 });
     });
 
-    it('completes the lesson, sets progress, and increments streak', async () => {
-      prisma.lesson.findUnique.mockResolvedValueOnce({ id: 'l1', module: { courseId: 'c1' } });
+    it('completes the lesson, sets progress, and increments streak with 100% side effects', async () => {
+      prisma.lesson.findUnique.mockResolvedValueOnce({ id: 'l1', module: { courseId: 'c1', course: { title: 'Test Course' } } });
       prisma.enrollment.findUnique.mockResolvedValueOnce({ id: 'e1', status: 'ACTIVE' });
       prisma.lesson.findMany.mockResolvedValueOnce([
         { id: 'l1', type: 'VIDEO' }
@@ -177,12 +192,21 @@ describe('Lessons Service', () => {
       mockTx.lessonProgress.upsert.mockResolvedValueOnce({ id: 'lp1' });
       mockTx.lessonProgress.count.mockResolvedValueOnce(1); // 1 / 1 = 100%
 
+      mockTx.userStreak.findUnique.mockResolvedValueOnce({
+        userId: 'u1', currentStreak: 1, longestStreak: 1, lastActiveDate: new Date(Date.now() - 24 * 60 * 60 * 1000)
+      });
       const now = new Date();
       const yesterdayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
-
+      mockTx.userStreak.findUnique.mockReset();
       mockTx.userStreak.findUnique.mockResolvedValueOnce({
         userId: 'u1', currentStreak: 1, longestStreak: 1, lastActiveDate: yesterdayStart
       });
+
+      mockTx.enrollment.count.mockResolvedValueOnce(4); // 4 completed courses before this one + 1 = 5
+      mockTx.achievement.findMany.mockResolvedValueOnce([
+        { id: 'ach1', title: '5 Courses Completed', criteriaType: 'COURSES_COMPLETED', criteriaValue: 5 }
+      ]);
+      mockTx.userAchievement.findMany.mockResolvedValueOnce([]);
 
       await lessonsService.completeLesson('u1', 'l1');
 
@@ -195,6 +219,16 @@ describe('Lessons Service', () => {
         where: { userId: 'u1' },
         data: expect.objectContaining({ currentStreak: 2 })
       }));
+      expect(mockTx.certificate.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ userId: 'u1', courseId: 'c1' })
+      }));
+      expect(mockTx.userAchievement.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: { userId: 'u1', achievementId: 'ach1' }
+      }));
+      
+      const { createNotification } = await import('../../notifications/notifications.service.js');
+      expect(createNotification).toHaveBeenCalledWith('u1', 'CERTIFICATE', 'Course Completed', expect.stringContaining('Test Course'), mockTx);
+      expect(createNotification).toHaveBeenCalledWith('u1', 'ACHIEVEMENT', 'New Achievement Unlocked!', expect.stringContaining('5 Courses Completed'), mockTx);
     });
   });
 });
