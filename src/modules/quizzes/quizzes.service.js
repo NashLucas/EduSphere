@@ -297,22 +297,24 @@ export const submitQuiz = async (user, quizId, answersData) => {
   }
 
   const score = (totalCorrect / questions.length) * 100;
-  const passed = score >= quiz.passingScore;
+  const isPassed = score >= quiz.passingScore;
+  const newAttemptsUsed = attemptsUsed + 1;
 
   const attempt = await prisma.quizAttempt.create({
     data: {
       userId: user.id,
       quizId,
       score,
-      passed,
+      isPassed,
+      attemptNumber: newAttemptsUsed,
+      totalQuestions: questions.length,
       answers: answersData,
     }
   });
 
-  const newAttemptsUsed = attemptsUsed + 1;
   const attemptsRemaining = quiz.maxAttempts !== null ? quiz.maxAttempts - newAttemptsUsed : null;
 
-  if (passed && quiz.lessonId) {
+  if (isPassed && quiz.lessonId) {
     const { completeLesson } = await import('../lessons/lessons.service.js');
     try {
       await completeLesson(user.id, quiz.lessonId);
@@ -326,7 +328,7 @@ export const submitQuiz = async (user, quizId, answersData) => {
 
   // Task 7.7 Graduated Answer Disclosure
   let finalBreakdown;
-  if (passed || attemptsRemaining === 0) {
+  if (isPassed || attemptsRemaining === 0) {
     // Leave full breakdown including correctAnswerIndex
     finalBreakdown = breakdown;
   } else {
@@ -336,7 +338,7 @@ export const submitQuiz = async (user, quizId, answersData) => {
 
   return {
     score,
-    passed,
+    passed: isPassed,
     ...(finalBreakdown && { breakdown: finalBreakdown }),
     attemptsRemaining,
   };
