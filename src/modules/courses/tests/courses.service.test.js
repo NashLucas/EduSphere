@@ -250,4 +250,38 @@ describe('Courses Service', () => {
       expect(prisma.subject.update).toHaveBeenCalled();
     });
   });
+
+  describe('verifyCourseOwnership', () => {
+    it('throws 404 if course does not exist', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce(null);
+      await expect(coursesService.verifyCourseOwnership('c1', 'u1', 'INSTRUCTOR'))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it('throws 404 if course is soft-deleted', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', deletedAt: new Date(), instructor: { userId: 'u1' } });
+      await expect(coursesService.verifyCourseOwnership('c1', 'u1', 'INSTRUCTOR'))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it('throws 403 if user is not the owner and not admin', async () => {
+      prisma.course.findUnique.mockResolvedValueOnce({ id: 'c1', deletedAt: null, instructor: { userId: 'owner-id' } });
+      await expect(coursesService.verifyCourseOwnership('c1', 'u1', 'INSTRUCTOR'))
+        .rejects.toMatchObject({ statusCode: 403 });
+    });
+
+    it('resolves successfully for the course owner', async () => {
+      const mockCourse = { id: 'c1', deletedAt: null, instructor: { userId: 'owner-id' } };
+      prisma.course.findUnique.mockResolvedValueOnce(mockCourse);
+      const res = await coursesService.verifyCourseOwnership('c1', 'owner-id', 'INSTRUCTOR');
+      expect(res).toEqual(mockCourse);
+    });
+
+    it('resolves successfully for an ADMIN even if not the owner', async () => {
+      const mockCourse = { id: 'c1', deletedAt: null, instructor: { userId: 'owner-id' } };
+      prisma.course.findUnique.mockResolvedValueOnce(mockCourse);
+      const res = await coursesService.verifyCourseOwnership('c1', 'admin-id', 'ADMIN');
+      expect(res).toEqual(mockCourse);
+    });
+  });
 });
