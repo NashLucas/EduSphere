@@ -45,7 +45,14 @@ export const createQuiz = async (userId, userRole, data) => {
 };
 
 export const updateQuiz = async (user, id, data) => {
-  await verifyQuizOwnership(user, id);
+  const quiz = await verifyQuizOwnership(user, id);
+
+  if (data.passingScore !== undefined && data.passingScore !== quiz.passingScore) {
+    const attemptCount = await prisma.quizAttempt.count({ where: { quizId: id } });
+    if (attemptCount > 0) {
+      throw ConflictError('Cannot change passingScore after attempts have been made');
+    }
+  }
 
   return await prisma.quiz.update({
     where: { id },
