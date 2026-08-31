@@ -271,6 +271,73 @@ export const submitQuiz = async (user, quizId, answersData) => {
     throw TooManyRequestsError('Maximum attempts reached for this quiz', { attemptsRemaining: 0 });
   }
 
-  // Tasks 7.6 and 7.7 will implement grading and disclosure here
-  return { attemptsRemaining: quiz.maxAttempts !== null ? quiz.maxAttempts - attemptsUsed : null };
+  const questions = await prisma.quizQuestion.findMany({
+    where: { quizId }
+  });
+
+  if (questions.length === 0) {
+    throw ConflictError('Cannot submit a quiz with no questions');
+  }
+
+  let totalCorrect = 0;
+  const breakdown = [];
+
+  for (const question of questions) {
+    const submittedAnswer = answersData.find(a => a.questionId === question.id);
+    const selectedIndex = submittedAnswer ? submittedAnswer.selectedIndex : -1;
+    const isCorrect = selectedIndex === question.correctAnswerIndex;
+
+    if (isCorrect) totalCorrect += 1;
+
+    breakdown.push({
+      questionId: question.id,
+      isCorrect,
+      correctAnswerIndex: question.correctAnswerIndex // Handled by 7.7 logic next
+    });
+  }
+
+  const score = (totalCorrect / questions.length) * 100;
+  const passed = score >= quiz.passingScore;
+
+  const attempt = await prisma.quizAttempt.create({
+    data: {
+      userId: user.id,
+      quizId,
+      score,
+      passed,
+      answers: answersData,
+    }
+  });
+
+  const newAttemptsUsed = attemptsUsed + 1;
+  const attemptsRemaining = quiz.maxAttempts !== null ? quiz.maxAttempts - newAttemptsUsed : null;
+
+  if (passed && quiz.lessonId) {
+    const { completeLesson } = await import('../lessons/lessons.service.js');
+    try {
+      await completeLesson(user.id, quiz.lessonId);
+    } catch (err) {
+      // Ignore conflict errors if lesson is already completed
+      if (err.statusCode !== 409) {
+        throw err;
+      }
+    }
+  }
+
+  // Task 7.7 Graduated Answer Disclosure
+  let finalBreakdown;
+  if (passed || attemptsRemaining === 0) {
+    // Leave full breakdown including correctAnswerIndex
+    finalBreakdown = breakdown;
+  } else {
+    // Omit the breakdown entirely so it cannot be used as an oracle
+    finalBreakdown = undefined;
+  }
+
+  return {
+    score,
+    passed,
+    ...(finalBreakdown && { breakdown: finalBreakdown }),
+    attemptsRemaining,
+  };
 };

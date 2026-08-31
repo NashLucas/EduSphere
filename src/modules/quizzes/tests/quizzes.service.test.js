@@ -22,6 +22,7 @@ vi.mock('../../../database/index.js', () => ({
     },
     quizAttempt: {
       count: vi.fn(),
+      create: vi.fn(),
     },
     enrollment: {
       findUnique: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('../../courses/courses.service.js', () => ({
 
 vi.mock('../../lessons/lessons.service.js', () => ({
   calculateNextAccessibleLessonId: vi.fn(),
+  completeLesson: vi.fn(),
 }));
 
 describe('Quizzes Service', () => {
@@ -336,23 +338,59 @@ describe('Quizzes Service', () => {
     });
 
     it('allows submission if maxAttempts is null (unlimited)', async () => {
-      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', maxAttempts: null });
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', passingScore: 50, maxAttempts: null });
       prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
-      prisma.quizAttempt.count.mockResolvedValue(10); // arbitrary large number
+      prisma.quizAttempt.count.mockResolvedValue(10);
+      prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1', correctAnswerIndex: 0 }]);
+      prisma.quizAttempt.create.mockResolvedValue({ id: 'a1' });
 
-      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', []);
+      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', [{ questionId: 'q1', selectedIndex: 0 }]);
 
       expect(result).toHaveProperty('attemptsRemaining', null);
+      expect(result).toHaveProperty('score', 100);
+      expect(result).toHaveProperty('passed', true);
     });
 
-    it('allows submission if maxAttempts is not reached', async () => {
-      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', maxAttempts: 3 });
+    it('grades correctly and returns graduated disclosure', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', passingScore: 100, maxAttempts: 3, lessonId: 'l1' });
       prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
       prisma.quizAttempt.count.mockResolvedValue(1);
+      prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1', correctAnswerIndex: 1 }]);
+      prisma.quizAttempt.create.mockResolvedValue({ id: 'a1' });
 
-      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', []);
+      // First try: Failed, attempts remain -> no breakdown
+      let result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', [{ questionId: 'q1', selectedIndex: 0 }]);
+      
+      expect(result).toHaveProperty('score', 0);
+      expect(result).toHaveProperty('passed', false);
+      expect(result.breakdown).toBeUndefined();
+      expect(result).toHaveProperty('attemptsRemaining', 1);
 
-      expect(result).toHaveProperty('attemptsRemaining', 2);
+      // Second try: Passed, attempts remain -> has breakdown with correctAnswerIndex, calls completeLesson
+      const { completeLesson } = await import('../../lessons/lessons.service.js');
+      
+      result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', [{ questionId: 'q1', selectedIndex: 1 }]);
+      
+      expect(result).toHaveProperty('score', 100);
+      expect(result).toHaveProperty('passed', true);
+      expect(result.breakdown[0]).toHaveProperty('correctAnswerIndex', 1);
+      expect(completeLesson).toHaveBeenCalledWith('u1', 'l1');
+    });
+
+    it('returns correctAnswerIndex if failed but attempts exhausted', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', passingScore: 100, maxAttempts: 3 });
+      prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+      // 2 attempts used, this will be the 3rd attempt, leaving 0 remaining
+      prisma.quizAttempt.count.mockResolvedValue(2);
+      prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1', correctAnswerIndex: 1 }]);
+      prisma.quizAttempt.create.mockResolvedValue({ id: 'a1' });
+
+      const result = await quizzesService.submitQuiz({ id: 'u1' }, 'q1', [{ questionId: 'q1', selectedIndex: 0 }]);
+      
+      expect(result).toHaveProperty('score', 0);
+      expect(result).toHaveProperty('passed', false);
+      expect(result.breakdown[0]).toHaveProperty('correctAnswerIndex', 1);
+      expect(result).toHaveProperty('attemptsRemaining', 0);
     });
   });
 });
