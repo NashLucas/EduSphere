@@ -1,6 +1,7 @@
 import prisma from '../../database/index.js';
 import { NotFoundError, UnauthorizedError, ForbiddenError, ConflictError } from '../../utils/app-error.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
+import { calculateNextAccessibleLessonId } from '../lessons/lessons.service.js';
 
 export const verifyQuizOwnership = async (user, quizId) => {
   const quiz = await prisma.quiz.findUnique({
@@ -174,4 +175,74 @@ export const deleteQuestion = async (user, quizId, questionId) => {
   return await prisma.quizQuestion.delete({
     where: { id: questionId }
   });
+};
+
+export const getQuiz = async (user, quizId) => {
+  const quiz = await prisma.quiz.findUnique({
+    where: { id: quizId },
+    include: {
+      course: true,
+    }
+  });
+
+  if (!quiz) throw NotFoundError('Quiz not found');
+
+  const isOwnerOrAdmin = user.role === 'ADMIN' || quiz.course.instructorId === user.id;
+
+  if (!isOwnerOrAdmin) {
+    const enrollment = await prisma.enrollment.findUnique({
+      where: { userId_courseId: { userId: user.id, courseId: quiz.courseId } }
+    });
+
+    if (!enrollment || enrollment.status !== 'ACTIVE') {
+      throw ForbiddenError('You must be actively enrolled to access this quiz');
+    }
+
+    if (quiz.lessonId) {
+      const { nextAccessibleLessonId, allLessons } = await calculateNextAccessibleLessonId(quiz.courseId, user.id, enrollment.id);
+      
+      const requestedIndex = allLessons.findIndex(l => l.id === quiz.lessonId);
+      const nextAccessibleIndex = allLessons.findIndex(l => l.id === nextAccessibleLessonId);
+
+      if (nextAccessibleIndex !== -1 && requestedIndex > nextAccessibleIndex) {
+        throw ForbiddenError('This quiz belongs to a locked lesson');
+      }
+    }
+  }
+
+  const selectCols = {
+    id: true,
+    quizId: true,
+    questionText: true,
+    type: true,
+    options: true,
+    orderIndex: true,
+    createdAt: true,
+    updatedAt: true,
+  };
+
+  if (isOwnerOrAdmin) {
+    selectCols.correctAnswerIndex = true;
+  }
+
+  const questions = await prisma.quizQuestion.findMany({
+    where: { quizId },
+    select: selectCols,
+    orderBy: { orderIndex: 'asc' }
+  });
+
+  const attemptsUsed = await prisma.quizAttempt.count({
+    where: { quizId, userId: user.id }
+  });
+
+  const attemptsRemaining = quiz.maxAttempts !== null 
+    ? Math.max(0, quiz.maxAttempts - attemptsUsed) 
+    : null;
+
+  return {
+    ...quiz,
+    attemptsUsed,
+    attemptsRemaining,
+    questions
+  };
 };

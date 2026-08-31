@@ -23,8 +23,13 @@ vi.mock('../../../database/index.js', () => ({
     quizAttempt: {
       count: vi.fn(),
     },
+    enrollment: {
+      findUnique: vi.fn(),
+    },
     quizQuestion: {
       findUnique: vi.fn(),
+      findMany: vi.fn(),
+      createMany: vi.fn(),
       createManyAndReturn: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
@@ -35,6 +40,10 @@ vi.mock('../../../database/index.js', () => ({
 
 vi.mock('../../courses/courses.service.js', () => ({
   verifyCourseOwnership: vi.fn(),
+}));
+
+vi.mock('../../lessons/lessons.service.js', () => ({
+  calculateNextAccessibleLessonId: vi.fn(),
 }));
 
 describe('Quizzes Service', () => {
@@ -262,6 +271,49 @@ describe('Quizzes Service', () => {
       await quizzesService.deleteQuestion({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', 'q2');
 
       expect(prisma.quizQuestion.delete).toHaveBeenCalledWith({ where: { id: 'q2' } });
+    });
+  });
+
+  describe('getQuiz', () => {
+    it('returns quiz with correctAnswerIndex for owner', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', course: { instructorId: 'u1' } });
+      prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1', correctAnswerIndex: 0 }]);
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      const result = await quizzesService.getQuiz({ id: 'u1', role: 'INSTRUCTOR' }, 'q1');
+
+      expect(result.questions[0]).toHaveProperty('correctAnswerIndex');
+      expect(prisma.quizQuestion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        select: expect.objectContaining({ correctAnswerIndex: true })
+      }));
+    });
+
+    it('returns quiz without correctAnswerIndex for enrolled student', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', course: { instructorId: 'u1' } });
+      prisma.enrollment.findUnique.mockResolvedValue({ status: 'ACTIVE' });
+      prisma.quizQuestion.findMany.mockResolvedValue([{ id: 'q1' }]);
+      prisma.quizAttempt.count.mockResolvedValue(1);
+
+      const result = await quizzesService.getQuiz({ id: 'u2', role: 'STUDENT' }, 'q1');
+
+      expect(result.questions[0]).not.toHaveProperty('correctAnswerIndex');
+      expect(prisma.quizQuestion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        select: expect.not.objectContaining({ correctAnswerIndex: true })
+      }));
+    });
+
+    it('throws 403 if lesson is locked for student', async () => {
+      prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', courseId: 'c1', lessonId: 'l2', course: { instructorId: 'u1' } });
+      prisma.enrollment.findUnique.mockResolvedValue({ id: 'e1', status: 'ACTIVE' });
+      
+      const { calculateNextAccessibleLessonId } = await import('../../lessons/lessons.service.js');
+      calculateNextAccessibleLessonId.mockResolvedValue({
+        nextAccessibleLessonId: 'l1',
+        allLessons: [{ id: 'l1' }, { id: 'l2' }] // l2 is after l1
+      });
+
+      await expect(quizzesService.getQuiz({ id: 'u2', role: 'STUDENT' }, 'q1'))
+        .rejects.toMatchObject({ statusCode: 403, message: 'This quiz belongs to a locked lesson' });
     });
   });
 });

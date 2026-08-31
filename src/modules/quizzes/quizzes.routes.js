@@ -37,6 +37,37 @@ router.post(
 /**
  * @openapi
  * /quizzes/{id}:
+ *   get:
+ *     summary: Get a quiz
+ *     description: Fetch quiz metadata and questions. Strips correctAnswerIndex for students.
+ *     tags: [Quizzes]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Quiz retrieved successfully
+ *       403:
+ *         description: Forbidden (not enrolled or lesson locked)
+ *       404:
+ *         description: Quiz not found
+ */
+router.get(
+  '/:id',
+  requireAuth,
+  validate({ params: quizIdParamSchema }),
+  quizzesController.getQuiz
+);
+
+/**
+ * @openapi
+ * /quizzes/{id}:
  *   put:
  *     summary: Update a quiz
  *     description: Updates a quiz. Instructors can only update their own quizzes.
