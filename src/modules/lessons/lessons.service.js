@@ -52,6 +52,46 @@ export const createLesson = async (userId, userRole, moduleId, data) => {
   });
 };
 
+export const calculateNextAccessibleLessonId = async (courseId, userId, enrollmentId) => {
+  const allLessons = await prisma.lesson.findMany({
+    where: { module: { courseId } },
+    orderBy: [
+      { module: { orderIndex: 'asc' } },
+      { orderIndex: 'asc' }
+    ],
+    select: { id: true, type: true }
+  });
+
+  const completedProgress = await prisma.lessonProgress.findMany({
+    where: { enrollmentId, isCompleted: true },
+    select: { lessonId: true }
+  });
+  const completedIds = new Set(completedProgress.map(p => p.lessonId));
+
+  let nextAccessibleLessonId = null;
+  for (const l of allLessons) {
+    if (!completedIds.has(l.id)) {
+      // Quiz maxAttempts exhaustion check (counts as passed)
+      if (l.type === 'QUIZ') {
+        const quiz = await prisma.quiz.findUnique({ where: { lessonId: l.id } });
+        if (quiz && quiz.maxAttempts !== null) {
+          const attempts = await prisma.quizAttempt.count({
+            where: { quizId: quiz.id, userId }
+          });
+          if (attempts >= quiz.maxAttempts) {
+            continue; // Treat as completed for unlocking purposes
+          }
+        }
+      }
+      
+      nextAccessibleLessonId = l.id;
+      break;
+    }
+  }
+  
+  return { nextAccessibleLessonId, allLessons };
+};
+
 export const getLesson = async (user, lessonId) => {
   const lesson = await prisma.lesson.findUnique({
     where: { id: lessonId },
@@ -90,41 +130,7 @@ export const getLesson = async (user, lessonId) => {
   }
 
   // 5. Sequential Unlocking Rule
-  const allLessons = await prisma.lesson.findMany({
-    where: { module: { courseId } },
-    orderBy: [
-      { module: { orderIndex: 'asc' } },
-      { orderIndex: 'asc' }
-    ],
-    select: { id: true, type: true }
-  });
-
-  const completedProgress = await prisma.lessonProgress.findMany({
-    where: { enrollmentId: enrollment.id, isCompleted: true },
-    select: { lessonId: true }
-  });
-  const completedIds = new Set(completedProgress.map(p => p.lessonId));
-
-  let nextAccessibleLessonId = null;
-  for (const l of allLessons) {
-    if (!completedIds.has(l.id)) {
-      // Quiz maxAttempts exhaustion check (counts as passed)
-      if (l.type === 'QUIZ') {
-        const quiz = await prisma.quiz.findUnique({ where: { lessonId: l.id } });
-        if (quiz && quiz.maxAttempts !== null) {
-          const attempts = await prisma.quizAttempt.count({
-            where: { quizId: quiz.id, userId: user.id }
-          });
-          if (attempts >= quiz.maxAttempts) {
-            continue; // Treat as completed for unlocking purposes
-          }
-        }
-      }
-      
-      nextAccessibleLessonId = l.id;
-      break;
-    }
-  }
+  const { nextAccessibleLessonId, allLessons } = await calculateNextAccessibleLessonId(courseId, user.id, enrollment.id);
 
   const requestedIndex = allLessons.findIndex(l => l.id === lesson.id);
   const nextAccessibleIndex = nextAccessibleLessonId 

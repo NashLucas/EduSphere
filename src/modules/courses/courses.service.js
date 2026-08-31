@@ -81,7 +81,7 @@ export const getFeaturedCourses = async () => {
   return courses;
 };
 
-export const getCourseBySlug = async (slug) => {
+export const getCourseBySlug = async (slug, user) => {
   const course = await prisma.course.findFirst({
     where: {
       slug,
@@ -120,6 +120,11 @@ export const getCourseBySlug = async (slug) => {
   course.modules = course.modules.map(mod => ({
     ...mod,
     lessons: mod.lessons.map(lesson => {
+      // If user is admin or course owner, don't strip
+      if (user && (user.role === 'ADMIN' || course.instructor.userId === user.id)) {
+        return lesson;
+      }
+      
       if (!lesson.isFreePreview) {
         // Strip sensitive fields without mutating the Prisma result.
         // We cannot use an explicit Prisma `select` here (like we do for Quiz answers)
@@ -132,6 +137,19 @@ export const getCourseBySlug = async (slug) => {
       return lesson;
     }),
   }));
+
+  // Calculate nextAccessibleLessonId if user is authenticated and enrolled
+  if (user && user.role !== 'ADMIN' && course.instructor.userId !== user.id) {
+    const enrollment = await prisma.enrollment.findUnique({
+      where: { userId_courseId: { userId: user.id, courseId: course.id } }
+    });
+
+    if (enrollment && enrollment.status === 'ACTIVE') {
+      const { calculateNextAccessibleLessonId } = await import('../lessons/lessons.service.js');
+      const { nextAccessibleLessonId } = await calculateNextAccessibleLessonId(course.id, user.id, enrollment.id);
+      course.nextAccessibleLessonId = nextAccessibleLessonId;
+    }
+  }
 
   return course;
 };

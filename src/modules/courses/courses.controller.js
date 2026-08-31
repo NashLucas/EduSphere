@@ -26,7 +26,7 @@ export const getFeaturedCourses = async (req, res, next) => {
 
 export const getCourseBySlug = async (req, res, next) => {
   try {
-    const course = await coursesService.getCourseBySlug(req.params.slug);
+    const course = await coursesService.getCourseBySlug(req.params.slug, req.user);
     response.success(res, course, MESSAGES.COURSES.RETRIEVED_SINGLE);
   } catch (error) {
     next(error);
