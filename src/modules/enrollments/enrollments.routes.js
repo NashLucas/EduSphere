@@ -115,4 +115,32 @@ router.get(
   enrollmentsController.getProgressDetail
 );
 
+/**
+ * @openapi
+ * /enrollments/{courseId}/drop:
+ *   patch:
+ *     summary: Drop an enrollment
+ *     description: Sets the enrollment status to DROPPED, preserving progress but skipping studentCount decrements.
+ *     tags: [Enrollments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: courseId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Enrollment dropped successfully
+ *       404:
+ *         description: Enrollment not found
+ */
+router.patch(
+  '/:courseId/drop',
+  validate({ params: courseIdParamSchema }),
+  enrollmentsController.dropEnrollment
+);
+
 export default router;
