@@ -1,5 +1,5 @@
 import prisma from '../../database/index.js';
-import { NotFoundError } from '../../utils/app-error.js';
+import { NotFoundError, UnauthorizedError, ForbiddenError, LockedError } from '../../utils/app-error.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
 
 // Helper to recalculate progress for all ACTIVE enrollments
@@ -52,13 +52,89 @@ export const createLesson = async (userId, userRole, moduleId, data) => {
   });
 };
 
-export const getLesson = async (lessonId) => {
-  // Access resolution is supposed to be in Task 5.3, but for basic 5.2 we just return the lesson
+export const getLesson = async (user, lessonId) => {
   const lesson = await prisma.lesson.findUnique({
     where: { id: lessonId },
+    include: {
+      module: {
+        include: {
+          course: {
+            include: { instructor: true }
+          }
+        }
+      }
+    }
   });
+
   if (!lesson) throw NotFoundError('Lesson not found');
   
+  // 1. isFreePreview -> 200 to anyone
+  if (lesson.isFreePreview) return lesson;
+
+  // 2. No valid token -> 401
+  if (!user) throw UnauthorizedError('Authentication required for this lesson');
+
+  // 3. Course owner or Admin -> 200
+  if (user.role === 'ADMIN' || lesson.module.course.instructor.userId === user.id) {
+    return lesson;
+  }
+
+  // 4. Check active enrollment
+  const courseId = lesson.module.courseId;
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { userId_courseId: { userId: user.id, courseId } }
+  });
+
+  if (!enrollment || enrollment.status !== 'ACTIVE') {
+    throw ForbiddenError('You must be actively enrolled to access this lesson');
+  }
+
+  // 5. Sequential Unlocking Rule
+  const allLessons = await prisma.lesson.findMany({
+    where: { module: { courseId } },
+    orderBy: [
+      { module: { orderIndex: 'asc' } },
+      { orderIndex: 'asc' }
+    ],
+    select: { id: true, type: true }
+  });
+
+  const completedProgress = await prisma.lessonProgress.findMany({
+    where: { enrollmentId: enrollment.id, isCompleted: true },
+    select: { lessonId: true }
+  });
+  const completedIds = new Set(completedProgress.map(p => p.lessonId));
+
+  let nextAccessibleLessonId = null;
+  for (const l of allLessons) {
+    if (!completedIds.has(l.id)) {
+      // Quiz maxAttempts exhaustion check (counts as passed)
+      if (l.type === 'QUIZ') {
+        const quiz = await prisma.quiz.findUnique({ where: { lessonId: l.id } });
+        if (quiz && quiz.maxAttempts !== null) {
+          const attempts = await prisma.quizAttempt.count({
+            where: { quizId: quiz.id, userId: user.id }
+          });
+          if (attempts >= quiz.maxAttempts) {
+            continue; // Treat as completed for unlocking purposes
+          }
+        }
+      }
+      
+      nextAccessibleLessonId = l.id;
+      break;
+    }
+  }
+
+  const requestedIndex = allLessons.findIndex(l => l.id === lesson.id);
+  const nextAccessibleIndex = nextAccessibleLessonId 
+    ? allLessons.findIndex(l => l.id === nextAccessibleLessonId) 
+    : allLessons.length;
+
+  if (requestedIndex > nextAccessibleIndex) {
+    throw LockedError('Lesson is locked', { nextAccessibleLessonId });
+  }
+
   return lesson;
 };
 

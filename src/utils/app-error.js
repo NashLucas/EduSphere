@@ -129,6 +129,17 @@ export const ValidationError = (
 export const UnprocessableEntityError = (message) => new AppError(message, 422);
 
 /**
+ * 423 - Locked. The resource is not yet accessible because previous steps have not been completed.
+ */
+export const LockedError = (message, details) => {
+  const err = new AppError(message, 423);
+  if (details) {
+    err.details = details;
+  }
+  return err;
+};
+
+/**
  * 429 — the quiz attempt cap (apidoc §5). Rate-limit 429s come from
  * express-rate-limit itself (task 2.4), not from here; this is for
  * `Quiz.maxAttempts` exhaustion, which is a service decision.
@@ -188,6 +199,7 @@ export function normalizeError(err) {
       statusCode: err.statusCode ?? 500,
       message: err.message,
       errors: err.errors,
+      details: err.details,
       isOperational: true,
     };
   }

@@ -17,9 +17,7 @@ export const createLesson = async (req, res, next) => {
 export const getLesson = async (req, res, next) => {
   try {
     const lessonId = req.params.id;
-    // Basic GET implementation for Task 5.2
-    // Full access resolution (Task 5.3) will add token, ownership, and enrollment checks here
-    const lesson = await lessonsService.getLesson(lessonId);
+    const lesson = await lessonsService.getLesson(req.user, lessonId);
     return res.status(200).json(apiResponse.success(lesson, 'Lesson fetched successfully'));
   } catch (err) {
     next(err);

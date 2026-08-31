@@ -124,12 +124,14 @@ export const paginated = (
  * @param {string} message
  * @param {Array<{field: string, message: string}>} [errors]
  * @param {string} [stack] included only outside production; app.js decides
+ * @param {object} [details] extra metadata for specific errors (e.g., nextAccessibleLessonId for 423)
  */
-export const error = (res, statusCode, message, errors, stack) =>
+export const error = (res, statusCode, message, errors, stack, details) =>
   res.status(statusCode).json({
     status: 'error',
     message,
     ...(errors !== undefined && { errors }),
+    ...(details !== undefined && { details }),
     ...(stack !== undefined && { stack }),
   });
 
