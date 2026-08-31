@@ -47,6 +47,7 @@ describe('Quizzes Service', () => {
         title: 'Quiz 1'
       });
 
+      expect(verifyCourseOwnership).toHaveBeenCalledWith('c1', 'u1', 'INSTRUCTOR');
       expect(result).toHaveProperty('id', 'q1');
       expect(prisma.quiz.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ maxAttempts: 3, passingScore: 70 })
@@ -62,6 +63,7 @@ describe('Quizzes Service', () => {
         title: 'Quiz 2'
       });
 
+      expect(verifyCourseOwnership).toHaveBeenCalledWith('c1', 'u1', 'INSTRUCTOR');
       expect(result).toHaveProperty('id', 'q2');
       expect(prisma.quiz.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ maxAttempts: null })

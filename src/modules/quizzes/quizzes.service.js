@@ -24,7 +24,7 @@ export const verifyQuizOwnership = async (user, quizId) => {
 };
 
 export const createQuiz = async (userId, userRole, data) => {
-  await verifyCourseOwnership(userId, userRole, data.courseId);
+  await verifyCourseOwnership(data.courseId, userId, userRole);
 
   let maxAttempts = data.maxAttempts;
   if (data.lessonId && data.maxAttempts === undefined) {
