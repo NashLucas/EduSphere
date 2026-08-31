@@ -62,13 +62,15 @@ describe('Lessons Service', () => {
   });
 
   describe('getLesson', () => {
-    it('fetches a lesson by id', async () => {
-      prisma.lesson.findUnique.mockResolvedValue({ id: 'les-1', title: 'Les 1' });
-
-      const result = await lessonsService.getLesson('les-1');
-
-      expect(prisma.lesson.findUnique).toHaveBeenCalledWith({ where: { id: 'les-1' } });
+    it('returns immediately if lesson is free preview', async () => {
+      prisma.lesson.findUnique.mockResolvedValue({ id: 'les-1', title: 'Les 1', isFreePreview: true });
+      const result = await lessonsService.getLesson(null, 'les-1');
       expect(result.title).toBe('Les 1');
+    });
+
+    it('throws Unauthorized if no token and not free', async () => {
+      prisma.lesson.findUnique.mockResolvedValue({ id: 'les-1', isFreePreview: false });
+      await expect(lessonsService.getLesson(null, 'les-1')).rejects.toThrow('Authentication required');
     });
   });
 

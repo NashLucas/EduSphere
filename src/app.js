@@ -385,7 +385,7 @@ function globalErrorHandler(err, req, res, next) {
     return next(err);
   }
 
-  const { statusCode, message, errors, isOperational } = normalizeError(err);
+  const { statusCode, message, errors, details, isOperational } = normalizeError(err);
 
   // A 500 is a bug in this process and has to reach the operator with its real
   // detail; a 4xx the client caused is already reported in the response. A
@@ -409,6 +409,7 @@ function globalErrorHandler(err, req, res, next) {
     // on development explicitly rather than on `NODE_ENV !== 'production'` — an
     // unset NODE_ENV must not leak them.
     NODE_ENV === 'development' ? err.stack : undefined,
+    details,
   );
 }
 

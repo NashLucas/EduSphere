@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as lessonsController from './lessons.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
-import { requireAuth } from '../../middlewares/auth.middleware.js';
+import { requireAuth, optionalAuth } from '../../middlewares/auth.middleware.js';
 import { requireRole } from '../../middlewares/rbac.middleware.js';
 import { updateLessonSchema, lessonIdParamSchema } from './lessons.schema.js';
 
@@ -26,6 +26,7 @@ const router = Router();
  */
 router.get(
   '/:id',
+  optionalAuth,
   validate({ params: lessonIdParamSchema }),
   lessonsController.getLesson
 );
