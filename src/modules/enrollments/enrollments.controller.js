@@ -14,3 +14,13 @@ export const enrollInCourse = async (req, res, next) => {
     next(error);
   }
 };
+
+export const listEnrollments = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const enrollments = await enrollmentsService.listEnrollments(userId, req.query);
+    response.success(res, enrollments, 'Enrollments retrieved successfully');
+  } catch (error) {
+    next(error);
+  }
+};
