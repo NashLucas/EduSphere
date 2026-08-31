@@ -43,6 +43,7 @@ import modulesRoutes from '../modules/modules/modules.routes.js';
 import lessonsRoutes from '../modules/lessons/lessons.routes.js';
 import enrollmentsRoutes from '../modules/enrollments/enrollments.routes.js';
 import quizzesRoutes from '../modules/quizzes/quizzes.routes.js';
+import resourcesRoutes from '../modules/resources/resources.routes.js';
 
 const apiRouter = Router();
 
@@ -53,5 +54,6 @@ apiRouter.use('/modules', modulesRoutes);
 apiRouter.use('/lessons', lessonsRoutes);
 apiRouter.use('/enrollments', enrollmentsRoutes);
 apiRouter.use('/quizzes', quizzesRoutes);
+apiRouter.use('/resources', resourcesRoutes);
 
 export default apiRouter;
