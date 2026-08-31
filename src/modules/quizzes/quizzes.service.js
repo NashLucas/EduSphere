@@ -104,7 +104,7 @@ export const addQuestions = async (user, quizId, questionsData) => {
     throw ConflictError('Cannot add questions after attempts have been made');
   }
 
-  const createdQuestions = await prisma.quizQuestion.createMany({
+  const createdQuestions = await prisma.quizQuestion.createManyAndReturn({
     data: questionsData.map(q => ({
       quizId,
       questionText: q.questionText,

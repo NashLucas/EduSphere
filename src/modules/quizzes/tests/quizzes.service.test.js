@@ -25,7 +25,7 @@ vi.mock('../../../database/index.js', () => ({
     },
     quizQuestion: {
       findUnique: vi.fn(),
-      createMany: vi.fn(),
+      createManyAndReturn: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
@@ -200,14 +200,14 @@ describe('Quizzes Service', () => {
     it('creates questions successfully if no attempts exist', async () => {
       prisma.quiz.findUnique.mockResolvedValue({ id: 'q1', course: { instructorId: 'u1' } });
       prisma.quizAttempt.count.mockResolvedValue(0);
-      prisma.quizQuestion.createMany.mockResolvedValue({ count: 2 });
+      prisma.quizQuestion.createManyAndReturn.mockResolvedValue([{ id: 'qq1' }, { id: 'qq2' }]);
 
       const result = await quizzesService.addQuestions({ id: 'u1', role: 'INSTRUCTOR' }, 'q1', [{
         questionText: 'Q1', options: ['A', 'B'], correctAnswerIndex: 0, orderIndex: 1
       }]);
 
-      expect(result).toEqual({ count: 2 });
-      expect(prisma.quizQuestion.createMany).toHaveBeenCalled();
+      expect(result).toEqual([{ id: 'qq1' }, { id: 'qq2' }]);
+      expect(prisma.quizQuestion.createManyAndReturn).toHaveBeenCalled();
     });
   });
 
