@@ -85,6 +85,7 @@ enum AuditActionType {
   USER_UNBANNED
   ROLE_CHANGED
   REVIEW_DELETED
+  QUIZ_DELETED
 }
 
 // NOTE — COURSE_APPROVED has no writer in the MVP. Instructors self-publish
@@ -97,6 +98,7 @@ enum AuditTargetType {
   COURSE
   USER
   REVIEW
+  QUIZ
 }
 
 model User {
