@@ -60,3 +60,13 @@ export const deleteQuestion = async (req, res, next) => {
     next(err);
   }
 };
+
+export const getQuiz = async (req, res, next) => {
+  try {
+    const quizId = req.params.id;
+    const quiz = await quizzesService.getQuiz(req.user, quizId);
+    return apiResponse.success(res, quiz, 'Quiz retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+};
