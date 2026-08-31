@@ -17,3 +17,61 @@ export const updateQuizSchema = z.object({
 export const quizIdParamSchema = z.object({
   id: z.string().uuid()
 });
+
+export const quizQuestionSchema = z.object({
+  questionText: z.string().min(1),
+  type: z.enum(['MULTIPLE_CHOICE', 'TRUE_FALSE']).optional(),
+  options: z.array(z.string()).min(2),
+  correctAnswerIndex: z.number().int().min(0),
+  orderIndex: z.number().int().min(0)
+}).superRefine((data, ctx) => {
+  if (data.type === 'TRUE_FALSE' && data.options.length !== 2) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'TRUE_FALSE questions must have exactly 2 options',
+      path: ['options']
+    });
+  }
+  if (data.correctAnswerIndex >= data.options.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'correctAnswerIndex must be within options bounds',
+      path: ['correctAnswerIndex']
+    });
+  }
+});
+
+export const batchCreateQuestionsSchema = z.object({
+  questions: z.array(quizQuestionSchema).min(1)
+});
+
+export const updateQuestionSchema = z.object({
+  questionText: z.string().min(1).optional(),
+  type: z.enum(['MULTIPLE_CHOICE', 'TRUE_FALSE']).optional(),
+  options: z.array(z.string()).min(2).optional(),
+  correctAnswerIndex: z.number().int().min(0).optional(),
+  orderIndex: z.number().int().min(0).optional()
+}).superRefine((data, ctx) => {
+  // If options and correctAnswerIndex are provided, validate bounds
+  if (data.options && data.correctAnswerIndex !== undefined) {
+    if (data.type === 'TRUE_FALSE' && data.options.length !== 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'TRUE_FALSE questions must have exactly 2 options',
+        path: ['options']
+      });
+    }
+    if (data.correctAnswerIndex >= data.options.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'correctAnswerIndex must be within options bounds',
+        path: ['correctAnswerIndex']
+      });
+    }
+  }
+});
+
+export const questionIdParamSchema = z.object({
+  id: z.string().uuid(),
+  questionId: z.string().uuid()
+});
