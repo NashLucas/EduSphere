@@ -341,3 +341,27 @@ export const submitQuiz = async (user, quizId, answersData) => {
     attemptsRemaining,
   };
 };
+
+export const getQuizAttempts = async (user, quizId, targetUserId) => {
+  const quiz = await prisma.quiz.findUnique({
+    where: { id: quizId },
+    include: { course: true }
+  });
+
+  if (!quiz) throw NotFoundError('Quiz not found');
+
+  const isOwnerOrAdmin = user.role === 'ADMIN' || quiz.course.instructorId === user.id;
+
+  if (targetUserId && targetUserId !== user.id && !isOwnerOrAdmin) {
+    throw ForbiddenError('You can only view your own attempts');
+  }
+
+  const userIdToFetch = targetUserId || user.id;
+
+  const attempts = await prisma.quizAttempt.findMany({
+    where: { quizId, userId: userIdToFetch },
+    orderBy: { attemptNumber: 'asc' }
+  });
+
+  return attempts;
+};

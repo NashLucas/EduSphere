@@ -80,3 +80,14 @@ export const submitQuiz = async (req, res, next) => {
     next(err);
   }
 };
+
+export const getQuizAttempts = async (req, res, next) => {
+  try {
+    const quizId = req.params.id;
+    const { userId } = req.query;
+    const attempts = await quizzesService.getQuizAttempts(req.user, quizId, userId);
+    return apiResponse.success(res, attempts, 'Quiz attempts retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+};

@@ -82,3 +82,7 @@ export const submitQuizSchema = z.object({
     selectedIndex: z.number().int().min(0)
   }))
 });
+
+export const getAttemptsQuerySchema = z.object({
+  userId: z.string().uuid().optional()
+});
