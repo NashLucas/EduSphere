@@ -24,3 +24,14 @@ export const listEnrollments = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getProgressDetail = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { courseId } = req.params;
+    const progress = await enrollmentsService.getProgressDetail(userId, courseId);
+    response.success(res, progress, 'Progress retrieved successfully');
+  } catch (error) {
+    next(error);
+  }
+};

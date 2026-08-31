@@ -3,7 +3,7 @@ import * as enrollmentsController from './enrollments.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireVerifiedEmail } from '../../middlewares/rbac.middleware.js';
-import { enrollSchema, listEnrollmentsQuerySchema } from './enrollments.schema.js';
+import { enrollSchema, listEnrollmentsQuerySchema, courseIdParamSchema } from './enrollments.schema.js';
 
 const router = Router();
 
@@ -85,6 +85,34 @@ router.post(
   requireVerifiedEmail,
   validate({ body: enrollSchema }),
   enrollmentsController.enrollInCourse
+);
+
+/**
+ * @openapi
+ * /enrollments/{courseId}/progress:
+ *   get:
+ *     summary: Get enrollment progress detail
+ *     description: Retrieves the lesson-by-lesson progress checklist for an enrollment.
+ *     tags: [Enrollments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: courseId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Progress detail grouped by module
+ *       404:
+ *         description: Enrollment not found
+ */
+router.get(
+  '/:courseId/progress',
+  validate({ params: courseIdParamSchema }),
+  enrollmentsController.getProgressDetail
 );
 
 export default router;

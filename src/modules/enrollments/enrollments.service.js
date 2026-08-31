@@ -120,3 +120,96 @@ export const listEnrollments = async (userId, query) => {
     }
   };
 };
+
+export const getProgressDetail = async (userId, courseId) => {
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { userId_courseId: { userId, courseId } }
+  });
+
+  if (!enrollment) {
+    throw NotFoundError('Enrollment not found');
+  }
+
+  const modules = await prisma.module.findMany({
+    where: { courseId },
+    orderBy: { orderIndex: 'asc' },
+    include: {
+      lessons: {
+        orderBy: { orderIndex: 'asc' },
+        select: {
+          id: true,
+          title: true,
+          type: true,
+          orderIndex: true,
+          quiz: {
+            select: { id: true, maxAttempts: true }
+          }
+        }
+      }
+    }
+  });
+
+  const lessonProgresses = await prisma.lessonProgress.findMany({
+    where: { enrollmentId: enrollment.id },
+  });
+
+  const progressMap = new Map(lessonProgresses.map(p => [p.lessonId, p]));
+
+  // Quiz attempts map to check max attempts exhaustion
+  const quizAttempts = await prisma.quizAttempt.groupBy({
+    by: ['quizId'],
+    where: { userId, quiz: { lesson: { module: { courseId } } } },
+    _count: { _all: true }
+  });
+  const attemptsMap = new Map(quizAttempts.map(q => [q.quizId, q._count._all]));
+
+  let nextAccessibleLessonId = null;
+  let foundLocked = false;
+
+  const result = modules.map(mod => {
+    return {
+      id: mod.id,
+      title: mod.title,
+      orderIndex: mod.orderIndex,
+      lessons: mod.lessons.map(lesson => {
+        const progress = progressMap.get(lesson.id);
+        const isCompleted = progress?.isCompleted || false;
+        const completedAt = progress?.isCompleted ? progress.updatedAt : null;
+        
+        let effectivelyCompleted = isCompleted;
+        if (!effectivelyCompleted && lesson.type === 'QUIZ' && lesson.quiz?.maxAttempts !== null) {
+          const attempts = attemptsMap.get(lesson.quiz.id) || 0;
+          if (attempts >= lesson.quiz.maxAttempts) {
+            effectivelyCompleted = true; // Exhausted max attempts counts as passed for unlocking
+          }
+        }
+
+        let isLocked = false;
+
+        if (foundLocked) {
+          isLocked = true;
+        } else if (!effectivelyCompleted) {
+          if (!nextAccessibleLessonId) {
+            nextAccessibleLessonId = lesson.id;
+            isLocked = false;
+          } else {
+            isLocked = true;
+          }
+          foundLocked = true;
+        }
+
+        return {
+          id: lesson.id,
+          title: lesson.title,
+          type: lesson.type,
+          orderIndex: lesson.orderIndex,
+          isCompleted,
+          completedAt,
+          isLocked
+        };
+      })
+    };
+  });
+
+  return { courseId, progressPercent: enrollment.progressPercent, modules: result };
+};
