@@ -111,4 +111,37 @@ router.delete(
   lessonsController.deleteLesson
 );
 
+/**
+ * @openapi
+ * /lessons/{id}/complete:
+ *   post:
+ *     summary: Complete a lesson
+ *     description: Marks a lesson as completed for the authenticated user and recalculates course progress.
+ *     tags: [Lessons]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Lesson marked as completed successfully
+ *       403:
+ *         description: Active enrollment required
+ *       404:
+ *         description: Lesson not found
+ *       423:
+ *         description: Lesson is locked
+ */
+router.post(
+  '/:id/complete',
+  requireAuth,
+  validate({ params: lessonIdParamSchema }),
+  lessonsController.completeLesson
+);
+
 export default router;
