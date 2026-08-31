@@ -3,11 +3,49 @@ import * as enrollmentsController from './enrollments.controller.js';
 import { validate } from '../../middlewares/validate.middleware.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { requireVerifiedEmail } from '../../middlewares/rbac.middleware.js';
-import { enrollSchema } from './enrollments.schema.js';
+import { enrollSchema, listEnrollmentsQuerySchema } from './enrollments.schema.js';
 
 const router = Router();
 
 router.use(requireAuth);
+
+/**
+ * @openapi
+ * /enrollments:
+ *   get:
+ *     summary: List user enrollments
+ *     description: Retrieves the authenticated user's enrollments.
+ *     tags: [Enrollments]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [ACTIVE, COMPLETED, DROPPED]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 100
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: A paginated list of enrollments
+ */
+router.get(
+  '/',
+  validate({ query: listEnrollmentsQuerySchema }),
+  enrollmentsController.listEnrollments
+);
 
 /**
  * @openapi

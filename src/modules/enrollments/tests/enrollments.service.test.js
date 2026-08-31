@@ -8,7 +8,7 @@ vi.mock('../../../database/index.js', () => ({
   default: {
     course: { findUnique: vi.fn(), update: vi.fn() },
     instructor: { update: vi.fn() },
-    enrollment: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    enrollment: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     $transaction: vi.fn(async (cb) => {
       return cb({
         enrollment: prisma.enrollment,
@@ -109,6 +109,39 @@ describe('Enrollments Service', () => {
         data: { studentCount: { increment: 1 } }
       });
       expect(createNotification).toHaveBeenCalled();
+    });
+  });
+
+  describe('listEnrollments', () => {
+    it('returns a paginated list of enrollments', async () => {
+      const mockEnrollments = [{ id: 'e1', courseId: 'c1', course: { title: 'Test' } }];
+      prisma.enrollment.findMany.mockResolvedValueOnce(mockEnrollments);
+      prisma.enrollment.count.mockResolvedValueOnce(1);
+
+      const res = await enrollmentsService.listEnrollments('u1', { page: 1, limit: 10 });
+      expect(res.data).toEqual(mockEnrollments);
+      expect(res.meta.total).toBe(1);
+      expect(res.meta.totalPages).toBe(1);
+      
+      expect(prisma.enrollment.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { userId: 'u1' },
+        skip: 0,
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+      }));
+    });
+
+    it('filters by status if provided', async () => {
+      prisma.enrollment.findMany.mockResolvedValueOnce([]);
+      prisma.enrollment.count.mockResolvedValueOnce(0);
+
+      await enrollmentsService.listEnrollments('u1', { status: 'ACTIVE', page: 2, limit: 5 });
+      
+      expect(prisma.enrollment.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { userId: 'u1', status: 'ACTIVE' },
+        skip: 5,
+        take: 5,
+      }));
     });
   });
 });

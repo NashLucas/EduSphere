@@ -73,3 +73,50 @@ export const enrollInCourse = async (userId, courseId) => {
     return enrollment;
   });
 };
+
+export const listEnrollments = async (userId, query) => {
+  const { status, page, limit } = query;
+  
+  const where = { userId };
+  if (status) {
+    where.status = status;
+  }
+
+  const [enrollments, total] = await Promise.all([
+    prisma.enrollment.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        course: {
+          select: {
+            id: true,
+            title: true,
+            slug: true,
+            subject: {
+              select: { id: true, name: true, slug: true }
+            },
+            instructor: {
+              select: {
+                id: true,
+                user: { select: { fullName: true } }
+              }
+            }
+          }
+        }
+      }
+    }),
+    prisma.enrollment.count({ where })
+  ]);
+
+  return {
+    data: enrollments,
+    meta: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    }
+  };
+};
