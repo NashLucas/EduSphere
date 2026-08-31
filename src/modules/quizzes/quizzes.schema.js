@@ -75,3 +75,10 @@ export const questionIdParamSchema = z.object({
   id: z.string().uuid(),
   questionId: z.string().uuid()
 });
+
+export const submitQuizSchema = z.object({
+  answers: z.array(z.object({
+    questionId: z.string().uuid(),
+    selectedIndex: z.number().int().min(0)
+  }))
+});

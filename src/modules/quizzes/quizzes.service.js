@@ -1,5 +1,5 @@
 import prisma from '../../database/index.js';
-import { NotFoundError, UnauthorizedError, ForbiddenError, ConflictError } from '../../utils/app-error.js';
+import { NotFoundError, UnauthorizedError, ForbiddenError, ConflictError, TooManyRequestsError } from '../../utils/app-error.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
 import { calculateNextAccessibleLessonId } from '../lessons/lessons.service.js';
 
@@ -245,4 +245,32 @@ export const getQuiz = async (user, quizId) => {
     attemptsRemaining,
     questions
   };
+};
+
+export const submitQuiz = async (user, quizId, answersData) => {
+  const quiz = await prisma.quiz.findUnique({
+    where: { id: quizId },
+    include: { course: true }
+  });
+
+  if (!quiz) throw NotFoundError('Quiz not found');
+
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { userId_courseId: { userId: user.id, courseId: quiz.courseId } }
+  });
+
+  if (!enrollment || enrollment.status !== 'ACTIVE') {
+    throw ForbiddenError('You must be actively enrolled to submit this quiz');
+  }
+
+  const attemptsUsed = await prisma.quizAttempt.count({
+    where: { quizId, userId: user.id }
+  });
+
+  if (quiz.maxAttempts !== null && attemptsUsed >= quiz.maxAttempts) {
+    throw TooManyRequestsError('Maximum attempts reached for this quiz', { attemptsRemaining: 0 });
+  }
+
+  // Tasks 7.6 and 7.7 will implement grading and disclosure here
+  return { attemptsRemaining: quiz.maxAttempts !== null ? quiz.maxAttempts - attemptsUsed : null };
 };

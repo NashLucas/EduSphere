@@ -144,8 +144,11 @@ export const LockedError = (message, details) => {
  * express-rate-limit itself (task 2.4), not from here; this is for
  * `Quiz.maxAttempts` exhaustion, which is a service decision.
  */
-export const TooManyRequestsError = (message = MESSAGES.COMMON.RATE_LIMITED) =>
-  new AppError(message, 429);
+export const TooManyRequestsError = (message = MESSAGES.COMMON.RATE_LIMITED, details) => {
+  const err = new AppError(message, 429);
+  if (details) err.details = details;
+  return err;
+};
 
 /**
  * 503 — a security-critical Redis path failing closed (apidoc §5, TRD §7.1). Not

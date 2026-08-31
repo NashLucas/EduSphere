@@ -70,3 +70,13 @@ export const getQuiz = async (req, res, next) => {
     next(err);
   }
 };
+
+export const submitQuiz = async (req, res, next) => {
+  try {
+    const quizId = req.params.id;
+    const result = await quizzesService.submitQuiz(req.user, quizId, req.body.answers);
+    return apiResponse.success(res, result, 'Quiz submitted successfully');
+  } catch (err) {
+    next(err);
+  }
+};
