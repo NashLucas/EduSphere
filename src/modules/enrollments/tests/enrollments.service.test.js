@@ -177,6 +177,7 @@ describe('Enrollments Service', () => {
       const res = await enrollmentsService.getProgressDetail('u1', 'c1');
       expect(res.courseId).toBe('c1');
       expect(res.progressPercent).toBe(50.0);
+      expect(res.nextAccessibleLessonId).toBe('l3');
       expect(res.modules).toHaveLength(1);
 
       const lessons = res.modules[0].lessons;

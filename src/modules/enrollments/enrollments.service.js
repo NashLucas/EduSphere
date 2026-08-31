@@ -211,5 +211,5 @@ export const getProgressDetail = async (userId, courseId) => {
     };
   });
 
-  return { courseId, progressPercent: enrollment.progressPercent, modules: result };
+  return { courseId, progressPercent: enrollment.progressPercent, nextAccessibleLessonId, modules: result };
 };
