@@ -20,3 +20,22 @@ export const getStudentDashboard = async (req, res, next) => {
     next(err);
   }
 };
+
+export const getUserProfile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const profile = await usersService.getUserProfile(id);
+    return apiResponse.success(res, profile, 'User profile retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateProfile = async (req, res, next) => {
+  try {
+    const updated = await usersService.updateUserProfile(req.user.id, req.body);
+    return apiResponse.success(res, updated, 'Profile updated successfully');
+  } catch (err) {
+    next(err);
+  }
+};

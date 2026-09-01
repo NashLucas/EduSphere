@@ -115,3 +115,44 @@ export const getStudentDashboard = async (userId) => {
     activeCoursesProgress
   };
 };
+
+export const getUserProfile = async (id) => {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      fullName: true,
+      bio: true,
+      avatarUrl: true,
+      role: true,
+      createdAt: true
+    }
+  });
+
+  if (!user) {
+    const { NotFoundError } = await import('../../utils/app-error.js');
+    throw new NotFoundError('User not found');
+  }
+
+  return user;
+};
+
+export const updateUserProfile = async (userId, updateData) => {
+  const { fullName, bio } = updateData;
+  const data = {};
+  if (fullName !== undefined) data.fullName = fullName;
+  if (bio !== undefined) data.bio = bio;
+
+  return await prisma.user.update({
+    where: { id: userId },
+    data,
+    select: {
+      id: true,
+      fullName: true,
+      bio: true,
+      avatarUrl: true,
+      role: true,
+      createdAt: true
+    }
+  });
+};

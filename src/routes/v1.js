@@ -47,6 +47,7 @@ import resourcesRoutes from '../modules/resources/resources.routes.js';
 import usersRoutes from '../modules/users/users.routes.js';
 import achievementsRoutes from '../modules/achievements/achievements.routes.js';
 import certificatesRoutes from '../modules/certificates/certificates.routes.js';
+import instructorsRoutes from '../modules/instructors/instructors.routes.js';
 
 const apiRouter = Router();
 
@@ -61,5 +62,6 @@ apiRouter.use('/resources', resourcesRoutes);
 apiRouter.use('/users', usersRoutes);
 apiRouter.use('/achievements', achievementsRoutes);
 apiRouter.use('/certificates', certificatesRoutes);
+apiRouter.use('/instructors', instructorsRoutes);
 
 export default apiRouter;
