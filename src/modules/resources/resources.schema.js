@@ -16,3 +16,11 @@ export const uploadUrlSchema = z.object({
     });
   }
 });
+
+export const confirmUploadSchema = z.object({
+  fileKey: z.string().startsWith('staging/'),
+  title: z.string().min(1).max(255),
+  description: z.string().max(1000).optional(),
+  category: z.string().min(1).max(50),
+  courseId: z.string().uuid().optional(),
+});
