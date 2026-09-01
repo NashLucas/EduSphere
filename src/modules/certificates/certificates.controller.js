@@ -5,7 +5,7 @@ export const verifyCertificate = async (req, res, next) => {
   try {
     const { certificateNo } = req.params;
     const details = await certificatesService.verifyCertificate(certificateNo);
-    return res.status(200).json(apiResponse.success(details, 'Certificate verified successfully'));
+    return apiResponse.success(res, details, 'Certificate verified successfully');
   } catch (err) {
     next(err);
   }
@@ -14,7 +14,7 @@ export const verifyCertificate = async (req, res, next) => {
 export const getMyCertificates = async (req, res, next) => {
   try {
     const certificates = await certificatesService.getMyCertificates(req.user.id);
-    return res.status(200).json(apiResponse.success(certificates, 'Certificates retrieved successfully'));
+    return apiResponse.success(res, certificates, 'Certificates retrieved successfully');
   } catch (err) {
     next(err);
   }
