@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as quizzesService from '../quizzes.service.js';
 import prisma from '../../../database/index.js';
 import { verifyCourseOwnership } from '../../courses/courses.service.js';
+import { calculateNextAccessibleLessonId } from '../../lessons/lessons.service.js';
+
+vi.mock('../../achievements/achievements.service.js', () => ({
+  evaluateAchievements: vi.fn().mockResolvedValue([]),
+}));
 
 const mockTx = {
   quiz: {

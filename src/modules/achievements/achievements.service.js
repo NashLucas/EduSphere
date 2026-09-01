@@ -1,4 +1,4 @@
-import { prisma } from '../../database/index.js';
+import prisma from '../../database/index.js';
 import { logger } from '../../middlewares/logging.middleware.js';
 
 /**
