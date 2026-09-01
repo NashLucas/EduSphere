@@ -327,8 +327,9 @@ export const completeLesson = async (userId, lessonId) => {
       enrollmentData.completedAt = new Date();
 
       // Certificate Generation
-      const randomPart = Math.random().toString(36).substring(2, 9).toUpperCase();
-      const certificateNo = `CERT-${randomPart}-${Date.now().toString(36).toUpperCase()}`;
+      const year = new Date().getFullYear();
+      const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase().padEnd(5, 'X');
+      const certificateNo = `EDU-${year}-${randomPart}`;
       await tx.certificate.create({
         data: {
           certificateNo,

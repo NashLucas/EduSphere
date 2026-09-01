@@ -46,6 +46,7 @@ import quizzesRoutes from '../modules/quizzes/quizzes.routes.js';
 import resourcesRoutes from '../modules/resources/resources.routes.js';
 import usersRoutes from '../modules/users/users.routes.js';
 import achievementsRoutes from '../modules/achievements/achievements.routes.js';
+import certificatesRoutes from '../modules/certificates/certificates.routes.js';
 
 const apiRouter = Router();
 
@@ -59,5 +60,6 @@ apiRouter.use('/quizzes', quizzesRoutes);
 apiRouter.use('/resources', resourcesRoutes);
 apiRouter.use('/users', usersRoutes);
 apiRouter.use('/achievements', achievementsRoutes);
+apiRouter.use('/certificates', certificatesRoutes);
 
 export default apiRouter;
