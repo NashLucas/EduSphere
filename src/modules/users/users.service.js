@@ -62,7 +62,10 @@ export const getStudentDashboard = async (userId) => {
   });
 
   const recentActivity = await prisma.lessonProgress.findMany({
-    where: { userId, isCompleted: true },
+    where: { 
+      enrollment: { userId }, 
+      isCompleted: true 
+    },
     orderBy: { completedAt: 'desc' },
     take: 5,
     include: {
