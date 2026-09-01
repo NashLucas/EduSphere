@@ -2,6 +2,7 @@ import prisma from '../../database/index.js';
 import { NotFoundError, UnauthorizedError, ForbiddenError, LockedError } from '../../utils/app-error.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
 import { createNotification } from '../notifications/notifications.service.js';
+import { evaluateAchievements } from '../achievements/achievements.service.js';
 
 // Helper to recalculate progress for all ACTIVE enrollments
 const recalculateProgressForCourse = async (tx, courseId) => {
@@ -344,41 +345,6 @@ export const completeLesson = async (userId, lessonId) => {
         `Congratulations! You have completed ${lesson.module.course.title}. Your certificate is now available.`, 
         tx
       );
-
-      // Achievements Evaluation
-      const completedCoursesCount = await tx.enrollment.count({
-        where: { userId, status: 'COMPLETED' }
-      });
-      // We add 1 because the current enrollment is updated below
-      const thresholds = await tx.achievement.findMany({
-        where: { criteriaType: 'COURSES_COMPLETED', criteriaValue: { lte: completedCoursesCount + 1 } }
-      });
-
-      if (thresholds.length > 0) {
-        const existingEarned = await tx.userAchievement.findMany({
-          where: { userId, achievementId: { in: thresholds.map(a => a.id) } },
-          select: { achievementId: true }
-        });
-        const earnedSet = new Set(existingEarned.map(ea => ea.achievementId));
-
-        for (const threshold of thresholds) {
-          if (!earnedSet.has(threshold.id)) {
-            await tx.userAchievement.create({
-              data: {
-                userId,
-                achievementId: threshold.id
-              }
-            });
-            await createNotification(
-              userId, 
-              'ACHIEVEMENT', 
-              'New Achievement Unlocked!', 
-              `You earned the "${threshold.title}" achievement!`, 
-              tx
-            );
-          }
-        }
-      }
     }
 
     await tx.enrollment.update({
@@ -386,6 +352,8 @@ export const completeLesson = async (userId, lessonId) => {
       data: enrollmentData
     });
 
-    return progress;
+    const newlyEarnedAchievements = await evaluateAchievements(userId, tx);
+
+    return { progress, newlyEarnedAchievements, isCourseCompleted: newPercent >= 100.0, course: lesson.module.course };
   });
 };

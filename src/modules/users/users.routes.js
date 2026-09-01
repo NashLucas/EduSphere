@@ -33,4 +33,7 @@ const upload = multer({
  */
 router.post('/me/avatar', requireAuth, upload.single('avatar'), usersController.uploadAvatar);
 
+import * as achievementsController from '../achievements/achievements.controller.js';
+router.get('/me/achievements', requireAuth, achievementsController.getMyAchievements);
+
 export default router;

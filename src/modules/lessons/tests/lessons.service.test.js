@@ -3,6 +3,10 @@ import * as lessonsService from '../lessons.service.js';
 import prisma from '../../../database/index.js';
 import { verifyCourseOwnership } from '../../courses/courses.service.js';
 
+vi.mock('../../achievements/achievements.service.js', () => ({
+  evaluateAchievements: vi.fn().mockResolvedValue([]),
+}));
+
 const mockTx = {
   lesson: {
     create: vi.fn(),
@@ -222,13 +226,12 @@ describe('Lessons Service', () => {
       expect(mockTx.certificate.create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ userId: 'u1', courseId: 'c1' })
       }));
-      expect(mockTx.userAchievement.create).toHaveBeenCalledWith(expect.objectContaining({
-        data: { userId: 'u1', achievementId: 'ach1' }
-      }));
+      
+      const { evaluateAchievements } = await import('../../achievements/achievements.service.js');
+      expect(evaluateAchievements).toHaveBeenCalledWith('u1', mockTx);
       
       const { createNotification } = await import('../../notifications/notifications.service.js');
       expect(createNotification).toHaveBeenCalledWith('u1', 'CERTIFICATE', 'Course Completed', expect.stringContaining('Test Course'), mockTx);
-      expect(createNotification).toHaveBeenCalledWith('u1', 'ACHIEVEMENT', 'New Achievement Unlocked!', expect.stringContaining('5 Courses Completed'), mockTx);
     });
   });
 });

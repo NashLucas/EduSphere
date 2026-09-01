@@ -334,11 +334,15 @@ export const submitQuiz = async (user, quizId, answersData) => {
     breakdown.forEach(b => delete b.correctAnswerIndex);
   }
 
+  const { evaluateAchievements } = await import('../achievements/achievements.service.js');
+  const newlyEarnedAchievements = await evaluateAchievements(user.id);
+
   return {
     score,
     passed: isPassed,
     breakdown,
     attemptsRemaining,
+    newlyEarnedAchievements
   };
 };
 
