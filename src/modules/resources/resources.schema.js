@@ -24,3 +24,20 @@ export const confirmUploadSchema = z.object({
   category: z.string().min(1).max(50),
   courseId: z.string().uuid().optional(),
 });
+
+export const getResourcesSchema = z.object({
+  category: z.string().optional(),
+  courseId: z.string().uuid().optional(),
+  page: z.string().regex(/^\d+$/).transform(Number).optional().default('1'),
+  limit: z.string().regex(/^\d+$/).transform(Number).optional().default('10')
+});
+
+export const createResourceSchema = z.object({
+  title: z.string().min(1).max(255),
+  description: z.string().max(1000).optional(),
+  category: z.string().min(1).max(50),
+  fileType: z.string().min(1).max(100),
+  fileUrl: z.string().url(),
+  fileSize: z.number().int().nonnegative().optional().default(0),
+  courseId: z.string().uuid().optional(),
+});
