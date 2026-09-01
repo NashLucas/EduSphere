@@ -14,14 +14,14 @@ vi.mock('../../../integrations/storage/index.js', () => ({
 }));
 
 vi.mock('../../../database/index.js', () => ({
-  prisma: {
+  default: {
     resource: {
       create: vi.fn(),
     },
   },
 }));
 
-import { prisma } from '../../../database/index.js';
+import prisma from '../../../database/index.js';
 import { AppError } from '../../../utils/app-error.js';
 
 describe('Resources Service', () => {

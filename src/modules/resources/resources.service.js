@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { prisma } from '../../database/index.js';
+import prisma from '../../database/index.js';
 import { generatePresignedUrl, headObject, moveObject } from '../../integrations/storage/index.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
 import { BadRequestError } from '../../utils/app-error.js';
