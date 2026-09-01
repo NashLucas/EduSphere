@@ -40,5 +40,7 @@ import * as certificatesController from '../certificates/certificates.controller
 router.get('/me/certificates', requireAuth, certificatesController.getMyCertificates);
 
 router.get('/me/dashboard', requireAuth, usersController.getStudentDashboard);
+router.put('/me', requireAuth, usersController.updateProfile);
+router.get('/:id', usersController.getUserProfile);
 
 export default router;
