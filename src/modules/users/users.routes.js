@@ -39,4 +39,6 @@ router.get('/me/achievements', requireAuth, achievementsController.getMyAchievem
 import * as certificatesController from '../certificates/certificates.controller.js';
 router.get('/me/certificates', requireAuth, certificatesController.getMyCertificates);
 
+router.get('/me/dashboard', requireAuth, usersController.getStudentDashboard);
+
 export default router;

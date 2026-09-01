@@ -34,3 +34,84 @@ export const uploadAvatar = async (userId, buffer) => {
 
   return updatedUser;
 };
+
+export const getStudentDashboard = async (userId) => {
+  const enrollments = await prisma.enrollment.findMany({
+    where: { userId },
+    include: {
+      course: { select: { id: true, title: true, slug: true, durationMinutes: true } }
+    }
+  });
+
+  const totalEnrolled = enrollments.length;
+  const activeEnrollments = enrollments.filter(e => e.status === 'ACTIVE');
+  const completedEnrollments = enrollments.filter(e => e.status === 'COMPLETED');
+
+  const active = activeEnrollments.length;
+  const completed = completedEnrollments.length;
+
+  const overallCompletionRate = totalEnrolled > 0 
+    ? enrollments.reduce((acc, curr) => acc + curr.progressPercent, 0) / totalEnrolled 
+    : 0;
+
+  const totalLearningMinutes = completedEnrollments.reduce((acc, curr) => acc + (curr.course.durationMinutes || 0), 0);
+  const totalLearningHours = Math.round((totalLearningMinutes / 60) * 10) / 10;
+
+  const streak = await prisma.userStreak.findUnique({
+    where: { userId }
+  });
+
+  const recentActivity = await prisma.lessonProgress.findMany({
+    where: { 
+      enrollment: { userId }, 
+      isCompleted: true 
+    },
+    orderBy: { completedAt: 'desc' },
+    take: 5,
+    include: {
+      lesson: {
+        select: {
+          title: true,
+          module: { select: { course: { select: { title: true } } } }
+        }
+      }
+    }
+  });
+
+  const { calculateNextAccessibleLessonId } = await import('../lessons/lessons.service.js');
+  
+  const activeCoursesProgress = await Promise.all(
+    activeEnrollments.map(async (enrollment) => {
+      const nextLessonId = await calculateNextAccessibleLessonId(userId, enrollment.course.id);
+      let nextLesson = null;
+      if (nextLessonId) {
+        nextLesson = await prisma.lesson.findUnique({
+          where: { id: nextLessonId },
+          select: { id: true, title: true, slug: true }
+        });
+      }
+      return {
+        course: enrollment.course,
+        progressPercent: enrollment.progressPercent,
+        nextLesson
+      };
+    })
+  );
+
+  return {
+    overview: {
+      totalEnrolled,
+      active,
+      completed,
+      overallCompletionRate,
+      totalLearningHours
+    },
+    streak: streak || { currentStreak: 0, longestStreak: 0 },
+    recentActivity: recentActivity.map(p => ({
+      lessonTitle: p.lesson.title,
+      courseTitle: p.lesson.module.course.title,
+      completedAt: p.completedAt
+    })),
+    activeCoursesProgress
+  };
+};
