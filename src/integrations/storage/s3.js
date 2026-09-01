@@ -60,3 +60,14 @@ export const moveObject = async (sourceKey, targetKey) => {
   });
   await s3Client.send(deleteCommand);
 };
+
+export const uploadBuffer = async (fileKey, buffer, contentType) => {
+  const command = new PutObjectCommand({
+    Bucket: process.env.AWS_S3_BUCKET || 'test-bucket',
+    Key: fileKey,
+    Body: buffer,
+    ContentType: contentType,
+  });
+  await s3Client.send(command);
+  return `https://${process.env.AWS_S3_BUCKET || 'test-bucket'}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${fileKey}`;
+};

@@ -13,3 +13,5 @@ export const generatePresignedUrl = provider.generatePresignedUrl;
 export const headObject = provider.headObject;
 export const deleteObject = provider.deleteObject;
 export const moveObject = provider.moveObject;
+
+export const uploadBuffer = provider.uploadBuffer;
