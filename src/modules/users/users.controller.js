@@ -11,3 +11,12 @@ export const uploadAvatar = async (req, res, next) => {
     next(err);
   }
 };
+
+export const getStudentDashboard = async (req, res, next) => {
+  try {
+    const dashboardData = await usersService.getStudentDashboard(req.user.id);
+    return apiResponse.success(res, dashboardData, 'Student dashboard retrieved successfully');
+  } catch (err) {
+    next(err);
+  }
+};
