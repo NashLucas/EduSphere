@@ -36,4 +36,7 @@ router.post('/me/avatar', requireAuth, upload.single('avatar'), usersController.
 import * as achievementsController from '../achievements/achievements.controller.js';
 router.get('/me/achievements', requireAuth, achievementsController.getMyAchievements);
 
+import * as certificatesController from '../certificates/certificates.controller.js';
+router.get('/me/certificates', requireAuth, certificatesController.getMyCertificates);
+
 export default router;
