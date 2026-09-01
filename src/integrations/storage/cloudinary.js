@@ -47,3 +47,16 @@ export const deleteObject = async (fileKey) => {
 export const moveObject = async (sourceKey, targetKey) => {
   await cloudinary.uploader.rename(sourceKey, targetKey);
 };
+
+export const uploadBuffer = async (fileKey, buffer, contentType) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { public_id: fileKey, resource_type: 'auto' },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+    uploadStream.end(buffer);
+  });
+};
