@@ -1,4 +1,7 @@
 import prisma from '../../database/index.js';
+import { NotFoundError } from '../../utils/app-error.js';
+import { deleteByPattern } from '../../utils/cache-keys.js';
+import { sendTakedownNotice } from '../../integrations/email/index.js';
 
 export const getCourses = async (filters, pagination) => {
   const { page, limit, sort } = pagination;
@@ -53,4 +56,66 @@ export const getCourses = async (filters, pagination) => {
   ]);
 
   return { courses, totalItems };
+};
+
+export const unpublishCourse = async (courseId, reason, adminId) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: {
+      instructor: {
+        include: { user: true }
+      }
+    }
+  });
+
+  if (!course) {
+    throw NotFoundError('Course not found');
+  }
+
+  if (!course.isPublished) {
+    // If it's already unpublished, just return it. TRD says second unpublish decrements nothing.
+    return course;
+  }
+
+  const updatedCourse = await prisma.$transaction(async (tx) => {
+    // 1. Mark as unpublished
+    const updated = await tx.course.update({
+      where: { id: courseId },
+      data: { isPublished: false }
+    });
+
+    // 2. Decrement subject.courseCount
+    await tx.subject.update({
+      where: { id: course.subjectId },
+      data: { courseCount: { decrement: 1 } }
+    });
+
+    // 3. Write AuditLog
+    await tx.auditLog.create({
+      data: {
+        adminId,
+        actionType: 'COURSE_REJECTED',
+        targetType: 'COURSE',
+        targetId: courseId,
+        reason
+      }
+    });
+
+    return updated;
+  });
+
+  // 4. Invalidate catalog cache
+  // "SCAN + UNLINK" is implemented inside deleteByPattern
+  await deleteByPattern('cache:courses:*');
+  await deleteByPattern(`cache:course:${course.slug}`);
+
+  // 5. Notify the instructor
+  sendTakedownNotice({
+    to: course.instructor.user.email,
+    fullName: course.instructor.user.fullName,
+    courseTitle: course.title,
+    reason,
+  }).catch(() => {});
+
+  return updatedCourse;
 };

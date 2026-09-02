@@ -56,4 +56,42 @@ router.get(
   adminController.getCourses
 );
 
+import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
+import { adminCourseReasonBodySchema } from './admin.schema.js';
+
+/**
+ * @openapi
+ * /admin/courses/{id}/unpublish:
+ *   patch:
+ *     summary: Unpublish a violating course with a reason
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Course successfully unpublished
+ */
+router.patch(
+  '/courses/:id/unpublish',
+  adminRateLimiter,
+  validate({ body: adminCourseReasonBodySchema }),
+  adminController.unpublishCourse
+);
+
 export default router;
