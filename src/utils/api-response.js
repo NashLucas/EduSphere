@@ -79,7 +79,7 @@ export const created = (res, data = {}, message = MESSAGES.COMMON.SUCCESS) =>
 export const paginated = (
   res,
   items,
-  { page, limit, totalItems },
+  { page, limit, totalItems, ...rest },
   message = MESSAGES.COMMON.SUCCESS,
 ) => {
   // Guard the divisor rather than trusting the caller. limit arrives clamped to
@@ -101,6 +101,7 @@ export const paginated = (
       // totalPages is 0, so page 1 correctly reports no next page.
       hasNextPage: page < totalPages,
       hasPrevPage: page > 1,
+      ...rest,
     },
   });
 };

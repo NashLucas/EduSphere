@@ -1,9 +1,18 @@
 import prisma from '../../database/index.js';
 import { NotFoundError, ForbiddenError, UnprocessableEntityError } from '../../utils/app-error.js';
-import { getJSON, setWithTTL, deleteByPattern } from '../../utils/cache-keys.js';
+import { getJSON, setWithTTL, deleteByPattern, keys, TTL } from '../../utils/cache-keys.js';
 
 export const getCourses = async (filters, pagination) => {
   const { page, limit, sort } = pagination;
+  
+  const cacheKey = keys.cache('courses', { ...filters, page, limit, sort });
+  try {
+    const cached = await getJSON(cacheKey);
+    if (cached) return cached;
+  } catch (err) {
+    // Fail open: a Redis error falls through to PostgreSQL
+  }
+
   const skip = (page - 1) * limit;
 
   // Build where clause
@@ -50,13 +59,25 @@ export const getCourses = async (filters, pagination) => {
     prisma.course.count({ where }),
   ]);
 
-  return { courses, totalItems };
+  const result = { courses, totalItems };
+  
+  try {
+    await setWithTTL(cacheKey, result, TTL.courseList);
+  } catch (err) {
+    // Fail open on write
+  }
+
+  return result;
 };
 
 export const getFeaturedCourses = async () => {
-  const cacheKey = 'cache:courses:featured';
-  const cached = await getJSON(cacheKey);
-  if (cached) return cached;
+  const cacheKey = keys.cache('courses', { featured: true });
+  try {
+    const cached = await getJSON(cacheKey);
+    if (cached) return cached;
+  } catch (err) {
+    // Fail open
+  }
 
   const courses = await prisma.course.findMany({
     where: {
@@ -77,43 +98,65 @@ export const getFeaturedCourses = async () => {
     },
   });
 
-  await setWithTTL(cacheKey, courses, 60 * 60); // 1 hour cache
+  try {
+    await setWithTTL(cacheKey, courses, TTL.courseList);
+  } catch (err) {
+    // Fail open
+  }
   return courses;
 };
 
 export const getCourseBySlug = async (slug, user) => {
-  const course = await prisma.course.findFirst({
-    where: {
-      slug,
-      isPublished: true,
-      deletedAt: null,
-    },
-    include: {
-      subject: {
-        select: { id: true, name: true, slug: true, icon: true, color: true },
+  const cacheKey = keys.cache('course', slug);
+  let course;
+
+  try {
+    const cached = await getJSON(cacheKey);
+    if (cached) course = cached;
+  } catch (err) {
+    // Fail open
+  }
+
+  if (!course) {
+    course = await prisma.course.findFirst({
+      where: {
+        slug,
+        isPublished: true,
+        deletedAt: null,
       },
-      instructor: {
-        select: {
-          id: true,
-          title: true,
-          rating: true,
-          studentCount: true,
-          user: { select: { fullName: true, avatarUrl: true, bio: true } },
+      include: {
+        subject: {
+          select: { id: true, name: true, slug: true, icon: true, color: true },
         },
-      },
-      modules: {
-        orderBy: { orderIndex: 'asc' },
-        include: {
-          lessons: {
-            orderBy: { orderIndex: 'asc' },
+        instructor: {
+          select: {
+            id: true,
+            title: true,
+            rating: true,
+            studentCount: true,
+            user: { select: { fullName: true, avatarUrl: true, bio: true } },
+          },
+        },
+        modules: {
+          orderBy: { orderIndex: 'asc' },
+          include: {
+            lessons: {
+              orderBy: { orderIndex: 'asc' },
+            },
           },
         },
       },
-    },
-  });
+    });
 
-  if (!course) {
-    throw NotFoundError('Course not found');
+    if (!course) {
+      throw NotFoundError('Course not found');
+    }
+
+    try {
+      await setWithTTL(cacheKey, course, TTL.courseDetail);
+    } catch (err) {
+      // Fail open
+    }
   }
 
   // Strip content for non-preview lessons
@@ -265,15 +308,23 @@ export const updateCourse = async (userId, userRole, courseId, data) => {
         await deleteByPattern('cache:courses:*');
       }
 
+      if (transition) {
+        await deleteByPattern('cache:courses:*');
+      }
+      await deleteByPattern(`cache:course:${fresh.slug}`);
       return updated;
     });
   }
 
   if (Object.keys(updateData).length > 0) {
-    return prisma.course.update({
+    const updated = await prisma.course.update({
       where: { id: courseId },
       data: updateData
     });
+    // Invalidate list if price or details change (some show up in list)
+    await deleteByPattern('cache:courses:*');
+    await deleteByPattern(`cache:course:${course.slug}`);
+    return updated;
   }
   return course;
 };
@@ -301,6 +352,7 @@ export const deleteCourse = async (userId, userRole, courseId) => {
     }
     
     await deleteByPattern('cache:courses:*');
+    await deleteByPattern(`cache:course:${fresh.slug}`);
   });
 };
 
