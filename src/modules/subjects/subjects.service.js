@@ -6,17 +6,22 @@ const slugify = (text) => text.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').
 
 export async function getAllSubjects() {
   const cacheKey = keys.cache('subjects', 'list');
-  const cached = await getJSON(cacheKey);
-  
-  if (cached) {
-    return cached;
+  try {
+    const cached = await getJSON(cacheKey);
+    if (cached) return cached;
+  } catch (err) {
+    // Fail open
   }
 
   const subjects = await prisma.subject.findMany({
     orderBy: { name: 'asc' },
   });
 
-  await setWithTTL(cacheKey, subjects, TTL.subjectsList).catch(() => {});
+  try {
+    await setWithTTL(cacheKey, subjects, TTL.subjectsList);
+  } catch (err) {
+    // Fail open
+  }
   return subjects;
 }
 

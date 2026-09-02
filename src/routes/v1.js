@@ -51,6 +51,7 @@ import instructorsRoutes from '../modules/instructors/instructors.routes.js';
 import bookmarksRoutes from '../modules/bookmarks/bookmarks.routes.js';
 import reviewsRoutes from '../modules/reviews/reviews.routes.js';
 import webhooksRoutes from '../modules/webhooks/webhooks.routes.js';
+import notificationsRoutes from '../modules/notifications/notifications.routes.js';
 
 const apiRouter = Router();
 
@@ -69,5 +70,6 @@ apiRouter.use('/instructors', instructorsRoutes);
 apiRouter.use('/bookmarks', bookmarksRoutes);
 apiRouter.use('/reviews', reviewsRoutes);
 apiRouter.use('/webhooks', webhooksRoutes);
+apiRouter.use('/notifications', notificationsRoutes);
 
 export default apiRouter;

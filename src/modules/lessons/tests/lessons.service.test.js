@@ -65,6 +65,9 @@ vi.mock('../../../database/index.js', () => ({
     quizAttempt: {
       count: vi.fn(),
     },
+    user: {
+      findUnique: vi.fn(),
+    },
     $transaction: vi.fn(async (cb) => cb(mockTx)),
   },
 }));

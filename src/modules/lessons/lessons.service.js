@@ -3,6 +3,7 @@ import { NotFoundError, UnauthorizedError, ForbiddenError, LockedError } from '.
 import { verifyCourseOwnership } from '../courses/courses.service.js';
 import { createNotification } from '../notifications/notifications.service.js';
 import { evaluateAchievements } from '../achievements/achievements.service.js';
+import { sendCourseCompletionEmail } from '../../integrations/email/index.js';
 
 // Helper to recalculate progress for all ACTIVE enrollments
 const recalculateProgressForCourse = async (tx, courseId) => {
@@ -238,7 +239,7 @@ export const completeLesson = async (userId, lessonId) => {
     throw LockedError('Lesson is locked', { nextAccessibleLessonId });
   }
 
-  return await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     // 2. Take row-level lock on enrollment (Task 6.6)
     const [lockedEnrollment] = await tx.$queryRaw`
       SELECT id, status FROM enrollments 
@@ -321,6 +322,7 @@ export const completeLesson = async (userId, lessonId) => {
 
     // 6. Write enrollment.progressPercent and check completion
     const enrollmentData = { progressPercent: newPercent };
+    let generatedCertNo = null;
     
     if (newPercent >= 100.0) {
       enrollmentData.status = 'COMPLETED';
@@ -329,10 +331,10 @@ export const completeLesson = async (userId, lessonId) => {
       // Certificate Generation
       const year = new Date().getFullYear();
       const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase().padEnd(5, 'X');
-      const certificateNo = `EDU-${year}-${randomPart}`;
+      generatedCertNo = `EDU-${year}-${randomPart}`;
       await tx.certificate.create({
         data: {
-          certificateNo,
+          certificateNo: generatedCertNo,
           userId,
           courseId,
         }
@@ -355,6 +357,30 @@ export const completeLesson = async (userId, lessonId) => {
 
     const newlyEarnedAchievements = await evaluateAchievements(userId, tx);
 
-    return { progress, newlyEarnedAchievements, isCourseCompleted: newPercent >= 100.0, course: lesson.module.course };
+    return { 
+      progress, 
+      newlyEarnedAchievements, 
+      isCourseCompleted: newPercent >= 100.0, 
+      course: lesson.module.course,
+      certificateNo: generatedCertNo
+    };
   });
+
+  if (result.isCourseCompleted) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, fullName: true }
+    });
+    
+    if (user) {
+      sendCourseCompletionEmail({
+        to: user.email,
+        fullName: user.fullName,
+        courseTitle: result.course.title,
+        certificateNo: result.certificateNo
+      }).catch(() => {});
+    }
+  }
+
+  return result;
 };

@@ -2,10 +2,12 @@ import prisma from '../../database/index.js';
 import { NotFoundError, ForbiddenError, ConflictError } from '../../utils/app-error.js';
 import { AuditActionType, AuditTargetType } from '@prisma/client';
 
+import { getJSON, setWithTTL, deleteByPattern } from '../../utils/cache-keys.js';
+
 const recalculateRatings = async (tx, courseId) => {
   const course = await tx.course.findUnique({
     where: { id: courseId },
-    select: { instructorId: true }
+    select: { instructorId: true, slug: true }
   });
 
   if (!course) return;
@@ -46,6 +48,8 @@ const recalculateRatings = async (tx, courseId) => {
     where: { id: course.instructorId },
     data: { rating: newInstructorRating }
   });
+
+  return course.slug;
 };
 
 export const createReview = async (userId, courseId, data) => {
@@ -65,8 +69,9 @@ export const createReview = async (userId, courseId, data) => {
     throw ConflictError('You have already reviewed this course.');
   }
 
-  return await prisma.$transaction(async (tx) => {
-    const review = await tx.review.create({
+  let slug;
+  const review = await prisma.$transaction(async (tx) => {
+    const r = await tx.review.create({
       data: {
         userId,
         courseId,
@@ -75,9 +80,16 @@ export const createReview = async (userId, courseId, data) => {
       }
     });
 
-    await recalculateRatings(tx, courseId);
-    return review;
+    slug = await recalculateRatings(tx, courseId);
+    return r;
   });
+
+  if (slug) {
+    await deleteByPattern('cache:courses:*');
+    await deleteByPattern(`cache:course:${slug}`);
+  }
+
+  return review;
 };
 
 export const listCourseReviews = async (courseId, { page = 1, limit = 10 }) => {
@@ -107,7 +119,8 @@ export const updateReview = async (userId, reviewId, data) => {
   if (!review) throw NotFoundError('Review not found');
   if (review.userId !== userId) throw ForbiddenError('You can only update your own review');
 
-  return await prisma.$transaction(async (tx) => {
+  let slug;
+  const updated = await prisma.$transaction(async (tx) => {
     const updated = await tx.review.update({
       where: { id: reviewId },
       data: {
@@ -116,9 +129,16 @@ export const updateReview = async (userId, reviewId, data) => {
       }
     });
 
-    await recalculateRatings(tx, review.courseId);
+    slug = await recalculateRatings(tx, review.courseId);
     return updated;
   });
+
+  if (slug) {
+    await deleteByPattern('cache:courses:*');
+    await deleteByPattern(`cache:course:${slug}`);
+  }
+
+  return updated;
 };
 
 export const deleteReview = async (userId, reviewId, role) => {
@@ -132,7 +152,8 @@ export const deleteReview = async (userId, reviewId, role) => {
     throw ForbiddenError('You do not have permission to delete this review');
   }
 
-  return await prisma.$transaction(async (tx) => {
+  let slug;
+  await prisma.$transaction(async (tx) => {
     await tx.review.delete({
       where: { id: reviewId }
     });
@@ -149,6 +170,11 @@ export const deleteReview = async (userId, reviewId, role) => {
       });
     }
 
-    await recalculateRatings(tx, review.courseId);
+    slug = await recalculateRatings(tx, review.courseId);
   });
+
+  if (slug) {
+    await deleteByPattern('cache:courses:*');
+    await deleteByPattern(`cache:course:${slug}`);
+  }
 };

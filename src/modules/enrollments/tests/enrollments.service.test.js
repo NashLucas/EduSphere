@@ -12,6 +12,7 @@ vi.mock('../../../database/index.js', () => ({
     module: { findMany: vi.fn() },
     lessonProgress: { findMany: vi.fn() },
     quizAttempt: { groupBy: vi.fn() },
+    user: { findUnique: vi.fn() },
     $transaction: vi.fn(async (cb) => {
       return cb({
         enrollment: prisma.enrollment,
