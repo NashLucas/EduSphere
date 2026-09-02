@@ -94,4 +94,39 @@ router.patch(
   adminController.unpublishCourse
 );
 
+/**
+ * @openapi
+ * /admin/courses/{id}/republish:
+ *   patch:
+ *     summary: Republish a taken-down course
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Course successfully republished
+ */
+router.patch(
+  '/courses/:id/republish',
+  adminRateLimiter,
+  validate({ body: adminCourseReasonBodySchema }),
+  adminController.republishCourse
+);
+
 export default router;
