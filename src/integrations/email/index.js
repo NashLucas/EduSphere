@@ -96,6 +96,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { logger } from '../../middlewares/logging.middleware.js';
+import axios from 'axios';
+import { templates } from './templates.js';
 
 // A child logger so every line from this module is filterable as one stream, and
 // so the real client inherits the same binding without touching call sites.
@@ -133,6 +135,33 @@ const linkBase = () =>
  * @param {(p: object) => object} buildFields  template-specific values to log
  * @returns {Promise<{delivered: boolean, template: string, to: string, error?: string}>}
  */
+const sendEmailRequest = async (to, subject, html) => {
+  const url = process.env.EMAIL_PROVIDER_URL || 'https://api.brevo.com/v3/smtp/email';
+  const apiKey = process.env.EMAIL_API_KEY;
+
+  if (!apiKey) {
+    // If no API key, just log (useful for local dev without secrets)
+    log.info({ to, subject }, '[email] STUB (No API Key) — would send email');
+    return;
+  }
+
+  const payload = {
+    sender: { name: FROM_NAME, email: FROM_ADDRESS },
+    to: [{ email: to }],
+    subject,
+    htmlContent: html
+  };
+
+  await axios.post(url, payload, {
+    headers: {
+      'api-key': apiKey,
+      'Content-Type': 'application/json'
+    }
+  });
+};
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function dispatch(template, params, buildFields) {
   let to;
   let fields = {};
@@ -142,54 +171,49 @@ async function dispatch(template, params, buildFields) {
     to = source.to;
     fields = buildFields(source) ?? {};
   } catch (err) {
-    // A getter that throws, or a buildFields that trips over a hostile value.
-    // `to` is reported when it was already read, so a failure that happened
-    // while building the template fields still says who the mail was for.
-    log.error(
-      { err, template, to },
-      '[email] malformed dispatch arguments — swallowed',
-    );
-    return {
-      delivered: false,
-      template,
-      to: typeof to === 'string' ? to : '',
-      error: err?.message ?? 'malformed arguments',
-    };
+    log.error({ err, template, to }, '[email] malformed dispatch arguments — swallowed');
+    return { delivered: false, template, to: typeof to === 'string' ? to : '', error: err?.message ?? 'malformed arguments' };
   }
 
   try {
-    // A stub that silently accepts a missing address would let a call site ship
-    // with `user.emil` in it and look fine in the logs until Day 11.
     if (typeof to !== 'string' || to.trim() === '') {
-      log.error(
-        { template, to, ...fields },
-        '[email] no recipient address — nothing dispatched',
-      );
+      log.error({ template, to, ...fields }, '[email] no recipient address — nothing dispatched');
       return { delivered: false, template, to: '', error: 'missing recipient' };
     }
 
-    log.info(
-      {
-        template,
-        to,
-        from: `${FROM_NAME} <${FROM_ADDRESS}>`,
-        stub: true,
-        ...fields,
-      },
-      `[email] STUB — would send "${template}" to ${to}`,
-    );
+    const { subject, html } = templates[template](fields);
 
-    return { delivered: true, template, to };
+    let attempt = 0;
+    const maxAttempts = 3;
+
+    while (attempt < maxAttempts) {
+      try {
+        await sendEmailRequest(to, subject, html);
+        log.info({ template, to }, '[email] Successfully dispatched email');
+        return { delivered: true, template, to };
+      } catch (err) {
+        attempt++;
+        const status = err.response?.status;
+        
+        // Hard bounce / Bad request - do not retry
+        if (status >= 400 && status < 500 && status !== 429) {
+          log.error({ err: err.message, status, template, to }, '[email] Hard bounce or bad request — not retrying');
+          return { delivered: false, template, to, error: err.message };
+        }
+
+        if (attempt >= maxAttempts) {
+          log.error({ err: err.message, template, to }, '[email] Dispatch failed after retries — swallowed');
+          return { delivered: false, template, to, error: err.message };
+        }
+
+        const delay = Math.pow(2, attempt) * 1000;
+        log.warn({ err: err.message, template, to, attempt, delay }, '[email] Dispatch failed, retrying...');
+        await sleep(delay);
+      }
+    }
   } catch (err) {
-    // Barely reachable in the stub; present because the real client's failure
-    // path must land here rather than at an unawaited caller. See the header.
     log.error({ err, template, to }, '[email] dispatch failed — swallowed');
-    return {
-      delivered: false,
-      template,
-      to: typeof to === 'string' ? to : '',
-      error: err?.message ?? 'unknown',
-    };
+    return { delivered: false, template, to: typeof to === 'string' ? to : '', error: err?.message ?? 'unknown' };
   }
 }
 
