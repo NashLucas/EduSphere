@@ -302,3 +302,59 @@ export const restoreCourse = async (courseId, reason, adminId) => {
 
   return updatedCourse;
 };
+
+export const getUsers = async (filters, pagination) => {
+  const { page, limit, sort } = pagination;
+  const skip = (page - 1) * limit;
+
+  const where = {};
+
+  if (filters.role) {
+    where.role = filters.role;
+  }
+
+  if (filters.isBanned !== undefined) {
+    where.isBanned = filters.isBanned;
+  }
+
+  if (filters.deleted !== undefined) {
+    if (filters.deleted === true) {
+      where.deletedAt = { not: null };
+    } else {
+      where.deletedAt = null;
+    }
+  }
+
+  if (filters.search) {
+    where.OR = [
+      { fullName: { contains: filters.search, mode: 'insensitive' } },
+      { email: { contains: filters.search, mode: 'insensitive' } },
+    ];
+  }
+
+  let orderBy = { createdAt: 'desc' };
+  if (sort === 'oldest') orderBy = { createdAt: 'asc' };
+  else if (sort === 'name') orderBy = { fullName: 'asc' };
+
+  const [users, totalItems] = await prisma.$transaction([
+    prisma.user.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy,
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        isBanned: true,
+        isEmailVerified: true,
+        createdAt: true,
+        deletedAt: true
+      },
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  return { users, totalItems };
+};

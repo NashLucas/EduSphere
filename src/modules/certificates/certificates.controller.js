@@ -1,11 +1,11 @@
 import * as certificatesService from './certificates.service.js';
-import { apiResponse } from '../../utils/api-response.js';
+import response from '../../utils/api-response.js';
 
 export const verifyCertificate = async (req, res, next) => {
   try {
     const { certificateNo } = req.params;
     const details = await certificatesService.verifyCertificate(certificateNo);
-    return apiResponse.success(res, details, 'Certificate verified successfully');
+    return response.success(res, details, 'Certificate verified successfully');
   } catch (err) {
     next(err);
   }
@@ -14,7 +14,7 @@ export const verifyCertificate = async (req, res, next) => {
 export const getMyCertificates = async (req, res, next) => {
   try {
     const certificates = await certificatesService.getMyCertificates(req.user.id);
-    return apiResponse.success(res, certificates, 'Certificates retrieved successfully');
+    return response.success(res, certificates, 'Certificates retrieved successfully');
   } catch (err) {
     next(err);
   }
