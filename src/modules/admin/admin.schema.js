@@ -20,8 +20,14 @@ export const adminCourseReasonBodySchema = z.object({
 
 export const getAdminUsersQuerySchema = paginationSchema.extend({
   role: z.enum(['STUDENT', 'INSTRUCTOR', 'ADMIN']).optional(),
-  isBanned: z.boolean({ coerce: true }).optional(),
-  deleted: z.boolean({ coerce: true }).optional(),
+  isBanned: z.preprocess(
+    (v) => (v === 'true' ? true : v === 'false' ? false : undefined),
+    z.boolean().optional()
+  ),
+  deleted: z.preprocess(
+    (v) => (v === 'true' ? true : v === 'false' ? false : undefined),
+    z.boolean().optional()
+  ),
   search: z.string().optional(),
   sort: z.enum(['newest', 'oldest', 'name']).optional(),
 });
