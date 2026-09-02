@@ -187,4 +187,19 @@ router.post(
   modulesController.createModule
 );
 
+import * as reviewsController from '../reviews/reviews.controller.js';
+import { createReviewSchema } from '../reviews/reviews.schema.js';
+
+router.post(
+  '/:courseId/reviews',
+  requireAuth,
+  validate({ body: createReviewSchema.body }),
+  reviewsController.createReview
+);
+
+router.get(
+  '/:courseId/reviews',
+  reviewsController.listCourseReviews
+);
+
 export { router as coursesRoutes };
