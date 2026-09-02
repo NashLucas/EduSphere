@@ -104,3 +104,16 @@ export const banUser = async (req, res, next) => {
     next(error);
   }
 };
+
+export const unbanUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+    
+    await adminService.unbanUser(id, reason, adminId);
+    response.success(res, null, 'User unbanned successfully');
+  } catch (error) {
+    next(error);
+  }
+};

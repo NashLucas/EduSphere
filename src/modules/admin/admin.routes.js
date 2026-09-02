@@ -341,4 +341,41 @@ router.post(
   adminController.banUser
 );
 
+
+
+/**
+ * @openapi
+ * /admin/users/{id}/unban:
+ *   post:
+ *     summary: Unban a user account
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Sets isBanned = false
+ */
+router.post(
+  '/users/:id/unban',
+  adminRateLimiter,
+  validate({ body: adminReasonBodySchema }),
+  adminController.unbanUser
+);
+
 export default router;

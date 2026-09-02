@@ -536,3 +536,57 @@ export const banUser = async (userId, reason, adminId) => {
 
   return { revokedSessions };
 };
+
+export const unbanUser = async (userId, reason, adminId) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId }
+  });
+
+  if (!user) {
+    throw NotFoundError('User not found');
+  }
+
+  if (!user.isBanned) {
+    return;
+  }
+
+  const updatedUser = await prisma.$transaction(async (tx) => {
+    const updated = await tx.user.update({
+      where: { id: userId },
+      data: { isBanned: false }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        adminId,
+        actionType: 'USER_UNBANNED',
+        targetType: 'USER',
+        targetId: userId,
+        reason
+      }
+    });
+
+    return updated;
+  });
+
+  // Update user:state in Redis
+  const statePayload = {
+    role: updatedUser.role,
+    isBanned: updatedUser.isBanned,
+    isEmailVerified: updatedUser.isEmailVerified,
+    deletedAt: updatedUser.deletedAt
+  };
+  await redis.set(userState(userId), JSON.stringify(statePayload), 'EX', TTL.userState);
+
+  // Send email (fire-and-forget)
+  sendAccountStatusEmail({
+    to: updatedUser.email,
+    fullName: updatedUser.fullName,
+    status: 'UNBANNED',
+    reason
+  }).catch(err => {
+    console.error('Failed to send unban email:', err);
+  });
+
+  return updatedUser;
+};

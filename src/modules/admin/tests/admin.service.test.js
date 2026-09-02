@@ -515,4 +515,69 @@ describe('Admin Service', () => {
       expect(result.revokedSessions).toBe(0);
     });
   });
+
+
+  describe('unbanUser', () => {
+    it('unbans user, updates state and sends email', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        isBanned: true,
+        email: 'test@test.com',
+        fullName: 'Test User'
+      });
+
+      prisma.user.update.mockResolvedValue({
+        id: 'u1',
+        role: 'STUDENT',
+        isBanned: false,
+        isEmailVerified: true,
+        deletedAt: null,
+        email: 'test@test.com',
+        fullName: 'Test User'
+      });
+
+      prisma.auditLog = { create: vi.fn() };
+      
+      const redis = (await import('../../../config/redis.js')).default;
+      const { sendAccountStatusEmail } = await import('../../../integrations/email/index.js');
+
+      await adminService.unbanUser('u1', 'appeal accepted', 'admin1');
+      
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { isBanned: false }
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actionType: 'USER_UNBANNED', reason: 'appeal accepted' })
+      });
+      expect(redis.set).toHaveBeenCalledWith(
+        'user:state:u1',
+        expect.stringContaining('"isBanned":false'),
+        'EX',
+        900
+      );
+      expect(sendAccountStatusEmail).toHaveBeenCalledWith({
+        to: 'test@test.com',
+        fullName: 'Test User',
+        status: 'UNBANNED',
+        reason: 'appeal accepted'
+      });
+    });
+
+    it('returns early if already unbanned', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        isBanned: false
+      });
+      
+      prisma.user.update.mockClear();
+      const redis = (await import('../../../config/redis.js')).default;
+      redis.set.mockClear();
+
+      await adminService.unbanUser('u1', 'appeal accepted', 'admin1');
+      
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+  });
 });
