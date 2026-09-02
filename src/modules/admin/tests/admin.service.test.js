@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as adminService from '../admin.service.js';
 import prisma from '../../../database/index.js';
-import { deleteByPattern } from '../../../utils/cache-keys.js';
-import { sendTakedownNotice } from '../../../integrations/email/index.js';
-import { createNotification } from '../../notifications/notifications.service.js';
+import redis from '../../../config/redis.js';
+import { createInstructorProfile } from '../../instructors/instructors.service.js';
 
 vi.mock('../../../utils/cache-keys.js', () => ({
-  deleteByPattern: vi.fn()
+  deleteByPattern: vi.fn(),
+  userState: (id) => 'user:state:' + id,
+  TTL: { userState: 900 }
+}));
+
+vi.mock('../../../config/redis.js', () => ({
+  default: { set: vi.fn(), smembers: vi.fn(), unlink: vi.fn() }
 }));
 
 vi.mock('../../../integrations/email/index.js', () => ({
@@ -17,9 +22,19 @@ vi.mock('../../notifications/notifications.service.js', () => ({
   createNotification: vi.fn().mockResolvedValue()
 }));
 
+vi.mock('../../instructors/instructors.service.js', () => ({
+  createInstructorProfile: vi.fn().mockResolvedValue()
+}));
+
 vi.mock('../../../database/index.js', () => ({
   default: {
     course: {
+      findMany: vi.fn(),
+      count: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
+    },
+    user: {
       findMany: vi.fn(),
       count: vi.fn(),
       findUnique: vi.fn(),
@@ -31,8 +46,10 @@ vi.mock('../../../database/index.js', () => ({
     auditLog: {
       create: vi.fn(),
     },
-    $transaction: vi.fn(async (cb) => {
-      // If cb is an array of promises, await Promise.all
+    instructor: {
+      create: vi.fn(),
+    },
+    $transaction: vi.fn().mockImplementation(async (cb) => {
       if (Array.isArray(cb)) {
         return Promise.all(cb);
       }
@@ -301,10 +318,8 @@ describe('Admin Service', () => {
 
   describe('getUsers', () => {
     it('returns users and total count', async () => {
-      prisma.user = { 
-        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
-        count: vi.fn().mockResolvedValue(1)
-      };
+      prisma.user.findMany.mockResolvedValue([{ id: 'u1' }]);
+      prisma.user.count.mockResolvedValue(1);
 
       const result = await adminService.getUsers({}, { page: 1, limit: 10 });
       expect(result.users).toHaveLength(1);
@@ -315,10 +330,8 @@ describe('Admin Service', () => {
     });
 
     it('filters by role, isBanned, and deleted', async () => {
-      prisma.user = { 
-        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
-        count: vi.fn().mockResolvedValue(1)
-      };
+      prisma.user.findMany.mockResolvedValue([{ id: 'u1' }]);
+      prisma.user.count.mockResolvedValue(1);
 
       await adminService.getUsers({ role: 'INSTRUCTOR', isBanned: true, deleted: true }, { page: 1, limit: 10 });
       expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -331,10 +344,8 @@ describe('Admin Service', () => {
     });
 
     it('filters by search', async () => {
-      prisma.user = { 
-        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
-        count: vi.fn().mockResolvedValue(1)
-      };
+      prisma.user.findMany.mockResolvedValue([{ id: 'u1' }]);
+      prisma.user.count.mockResolvedValue(1);
 
       await adminService.getUsers({ search: 'john' }, { page: 1, limit: 10 });
       expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -345,6 +356,93 @@ describe('Admin Service', () => {
           ]
         }
       }));
+    });
+  });
+
+
+  describe('updateUserRole', () => {
+    it('promotes user to INSTRUCTOR and creates profile', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'STUDENT',
+        isBanned: false,
+        isEmailVerified: true,
+        deletedAt: null
+      });
+
+      prisma.user.update.mockResolvedValue({
+        id: 'u1',
+        role: 'INSTRUCTOR',
+        isBanned: false,
+        isEmailVerified: true,
+        deletedAt: null
+      });
+
+      const result = await adminService.updateUserRole('u1', 'INSTRUCTOR', false, 'admin1');
+      
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { role: 'INSTRUCTOR' }
+      });
+      expect(createInstructorProfile).toHaveBeenCalledWith('u1', expect.anything());
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actionType: 'ROLE_CHANGED' })
+      });
+      expect(redis.set).toHaveBeenCalledWith(
+        'user:state:u1',
+        expect.any(String),
+        'EX',
+        900
+      );
+      expect(result.role).toBe('INSTRUCTOR');
+    });
+
+    it('throws 409 when demoting instructor with published courses', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'INSTRUCTOR',
+        instructorProfile: {
+          courses: [{ id: 'c1' }]
+        }
+      });
+
+      await expect(adminService.updateUserRole('u1', 'STUDENT', false, 'admin1')).rejects.toThrow('User owns published courses');
+    });
+
+    it('demotes instructor and unpublishes courses when force=true', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'INSTRUCTOR',
+        isBanned: false,
+        isEmailVerified: true,
+        deletedAt: null,
+        instructorProfile: {
+          courses: [{ id: 'c1', subjectId: 's1', slug: 'c1-slug' }]
+        }
+      });
+
+      prisma.user.update.mockResolvedValue({
+        id: 'u1',
+        role: 'STUDENT',
+        isBanned: false,
+        isEmailVerified: true,
+        deletedAt: null
+      });
+
+      await adminService.updateUserRole('u1', 'STUDENT', true, 'admin1');
+      
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+        data: { isPublished: false }
+      });
+      expect(prisma.subject.update).toHaveBeenCalledWith({
+        where: { id: 's1' },
+        data: { courseCount: { decrement: 1 } }
+      });
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { role: 'STUDENT' }
+      });
     });
   });
 });

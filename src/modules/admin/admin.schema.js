@@ -31,3 +31,14 @@ export const getAdminUsersQuerySchema = paginationSchema.extend({
   search: z.string().optional(),
   sort: z.enum(['newest', 'oldest', 'name']).optional(),
 });
+
+export const updateUserRoleBodySchema = z.object({
+  role: z.enum(['STUDENT', 'INSTRUCTOR', 'ADMIN']),
+});
+
+export const updateUserRoleQuerySchema = z.object({
+  force: z.preprocess(
+    (v) => (v === 'true' ? true : v === 'false' ? false : undefined),
+    z.boolean().optional()
+  )
+});

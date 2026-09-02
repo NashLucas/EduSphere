@@ -57,7 +57,7 @@ router.get(
 );
 
 import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
-import { adminCourseReasonBodySchema, getAdminUsersQuerySchema } from './admin.schema.js';
+import { adminCourseReasonBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
 
 /**
  * @openapi
@@ -256,6 +256,52 @@ router.get(
   '/users',
   validate({ query: getAdminUsersQuerySchema }),
   adminController.getUsers
+);
+
+
+
+
+
+/**
+ * @openapi
+ * /admin/users/{id}/role:
+ *   patch:
+ *     summary: Promote or change a user's role
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: force
+ *         schema:
+ *           type: boolean
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [role]
+ *             properties:
+ *               role:
+ *                 type: string
+ *                 enum: [STUDENT, INSTRUCTOR, ADMIN]
+ *     responses:
+ *       200:
+ *         description: Updated role
+ *       409:
+ *         description: Demoting an instructor who owns published courses
+ */
+router.patch(
+  '/users/:id/role',
+  adminRateLimiter,
+  validate({ body: updateUserRoleBodySchema, query: updateUserRoleQuerySchema }),
+  adminController.updateUserRole
 );
 
 export default router;

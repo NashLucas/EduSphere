@@ -77,3 +77,17 @@ export const getUsers = async (req, res, next) => {
     next(error);
   }
 };
+
+export const updateUserRole = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    const force = req.query.force;
+    const adminId = req.user.id;
+    
+    const result = await adminService.updateUserRole(id, role, force, adminId);
+    response.success(res, result, 'User role updated successfully');
+  } catch (error) {
+    next(error);
+  }
+};
