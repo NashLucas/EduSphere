@@ -57,7 +57,7 @@ router.get(
 );
 
 import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
-import { adminCourseReasonBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
+import { adminReasonBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
 
 /**
  * @openapi
@@ -90,7 +90,7 @@ import { adminCourseReasonBodySchema, getAdminUsersQuerySchema, updateUserRoleBo
 router.patch(
   '/courses/:id/unpublish',
   adminRateLimiter,
-  validate({ body: adminCourseReasonBodySchema }),
+  validate({ body: adminReasonBodySchema }),
   adminController.unpublishCourse
 );
 
@@ -125,7 +125,7 @@ router.patch(
 router.patch(
   '/courses/:id/republish',
   adminRateLimiter,
-  validate({ body: adminCourseReasonBodySchema }),
+  validate({ body: adminReasonBodySchema }),
   adminController.republishCourse
 );
 
@@ -162,7 +162,7 @@ router.patch(
 router.delete(
   '/courses/:id',
   adminRateLimiter,
-  validate({ body: adminCourseReasonBodySchema }),
+  validate({ body: adminReasonBodySchema }),
   adminController.softDeleteCourse
 );
 
@@ -201,7 +201,7 @@ router.delete(
 router.patch(
   '/courses/:id/restore',
   adminRateLimiter,
-  validate({ body: adminCourseReasonBodySchema }),
+  validate({ body: adminReasonBodySchema }),
   adminController.restoreCourse
 );
 
@@ -302,6 +302,43 @@ router.patch(
   adminRateLimiter,
   validate({ body: updateUserRoleBodySchema, query: updateUserRoleQuerySchema }),
   adminController.updateUserRole
+);
+
+
+
+/**
+ * @openapi
+ * /admin/users/{id}/ban:
+ *   post:
+ *     summary: Ban a user account and instantly revoke all active sessions
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Sets isBanned = true and revokes sessions
+ */
+router.post(
+  '/users/:id/ban',
+  adminRateLimiter,
+  validate({ body: adminReasonBodySchema }),
+  adminController.banUser
 );
 
 export default router;
