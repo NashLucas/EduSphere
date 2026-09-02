@@ -6,7 +6,7 @@ import { createInstructorProfile } from '../../instructors/instructors.service.j
 
 vi.mock('../../../utils/cache-keys.js', () => ({
   deleteByPattern: vi.fn(),
-  userState: (id) => 'user:state:' + id,
+  userState: (id) => 'user:state:' + id, session: (id) => 'session:' + id, sessionIndex: (id) => 'session:index:' + id,
   TTL: { userState: 900 }
 }));
 
@@ -15,7 +15,7 @@ vi.mock('../../../config/redis.js', () => ({
 }));
 
 vi.mock('../../../integrations/email/index.js', () => ({
-  sendTakedownNotice: vi.fn().mockResolvedValue()
+  sendTakedownNotice: vi.fn().mockResolvedValue(), sendAccountStatusEmail: vi.fn().mockResolvedValue()
 }));
 
 vi.mock('../../notifications/notifications.service.js', () => ({
@@ -443,6 +443,76 @@ describe('Admin Service', () => {
         where: { id: 'u1' },
         data: { role: 'STUDENT' }
       });
+    });
+  });
+
+
+  describe('banUser', () => {
+    it('bans user, revokes sessions, updates state and sends email', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        isBanned: false,
+        email: 'test@test.com',
+        fullName: 'Test User'
+      });
+
+      prisma.user.update.mockResolvedValue({
+        id: 'u1',
+        role: 'STUDENT',
+        isBanned: true,
+        isEmailVerified: true,
+        deletedAt: null,
+        email: 'test@test.com',
+        fullName: 'Test User'
+      });
+
+      prisma.auditLog = { create: vi.fn() };
+      
+      const redis = (await import('../../../config/redis.js')).default;
+      redis.smembers.mockResolvedValue(['session1', 'session2']);
+      redis.unlink.mockResolvedValue();
+
+      const { sendAccountStatusEmail } = await import('../../../integrations/email/index.js');
+
+      const result = await adminService.banUser('u1', 'violation', 'admin1');
+      
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { isBanned: true }
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ actionType: 'USER_BANNED', reason: 'violation' })
+      });
+      expect(redis.smembers).toHaveBeenCalledWith('session:index:u1');
+      expect(redis.unlink).toHaveBeenCalledWith('session:session1', 'session:session2');
+      expect(redis.unlink).toHaveBeenCalledWith('session:index:u1');
+      expect(redis.set).toHaveBeenCalledWith(
+        'user:state:u1',
+        expect.stringContaining('"isBanned":true'),
+        'EX',
+        900
+      );
+      expect(sendAccountStatusEmail).toHaveBeenCalledWith({
+        to: 'test@test.com',
+        fullName: 'Test User',
+        status: 'BANNED',
+        reason: 'violation'
+      });
+      expect(result.revokedSessions).toBe(2);
+    });
+
+    it('returns 0 revokedSessions if already banned', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        isBanned: true
+      });
+      
+      prisma.user.update.mockClear();
+
+      const result = await adminService.banUser('u1', 'violation', 'admin1');
+      
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(result.revokedSessions).toBe(0);
     });
   });
 });

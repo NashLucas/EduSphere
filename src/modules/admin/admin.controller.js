@@ -91,3 +91,16 @@ export const updateUserRole = async (req, res, next) => {
     next(error);
   }
 };
+
+export const banUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+    
+    const result = await adminService.banUser(id, reason, adminId);
+    response.success(res, result, 'User banned successfully');
+  } catch (error) {
+    next(error);
+  }
+};

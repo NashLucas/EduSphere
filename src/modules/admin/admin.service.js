@@ -1,7 +1,7 @@
 import prisma from '../../database/index.js';
 import { NotFoundError, ConflictError } from '../../utils/app-error.js';
 import { deleteByPattern } from '../../utils/cache-keys.js';
-import { sendTakedownNotice } from '../../integrations/email/index.js';
+import { sendTakedownNotice, sendAccountStatusEmail } from '../../integrations/email/index.js';
 import { createNotification } from '../notifications/notifications.service.js';
 
 export const getCourses = async (filters, pagination) => {
@@ -361,7 +361,7 @@ export const getUsers = async (filters, pagination) => {
 
 import { createInstructorProfile } from '../instructors/instructors.service.js';
 import redis from '../../config/redis.js';
-import { userState, TTL } from '../../utils/cache-keys.js';
+import { userState, TTL, session, sessionIndex } from '../../utils/cache-keys.js';
 
 export const updateUserRole = async (userId, role, force, adminId) => {
   const user = await prisma.user.findUnique({
@@ -468,4 +468,71 @@ export const updateUserRole = async (userId, role, force, adminId) => {
   }
 
   return updatedUser;
+};
+
+export const banUser = async (userId, reason, adminId) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId }
+  });
+
+  if (!user) {
+    throw NotFoundError('User not found');
+  }
+
+  if (user.isBanned) {
+    return { revokedSessions: 0 };
+  }
+
+  const updatedUser = await prisma.$transaction(async (tx) => {
+    const updated = await tx.user.update({
+      where: { id: userId },
+      data: { isBanned: true }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        adminId,
+        actionType: 'USER_BANNED',
+        targetType: 'USER',
+        targetId: userId,
+        reason
+      }
+    });
+
+    return updated;
+  });
+
+  // Revoke all sessions
+  const indexKey = sessionIndex(userId);
+  const jtis = await redis.smembers(indexKey);
+  let revokedSessions = 0;
+  
+  if (jtis && jtis.length > 0) {
+    const keysToDelete = jtis.map(j => session(j));
+    await redis.unlink(...keysToDelete);
+    revokedSessions = jtis.length;
+  }
+  await redis.unlink(indexKey);
+
+  // Update user:state in Redis
+  const statePayload = {
+    role: updatedUser.role,
+    isBanned: updatedUser.isBanned,
+    isEmailVerified: updatedUser.isEmailVerified,
+    deletedAt: updatedUser.deletedAt
+  };
+  await redis.set(userState(userId), JSON.stringify(statePayload), 'EX', TTL.userState);
+
+  // Send email (fire-and-forget)
+  sendAccountStatusEmail({
+    to: updatedUser.email,
+    fullName: updatedUser.fullName,
+    status: 'BANNED',
+    reason
+  }).catch(err => {
+    // Log the error but don't fail the request
+    console.error('Failed to send ban email:', err);
+  });
+
+  return { revokedSessions };
 };
