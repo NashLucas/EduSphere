@@ -3,6 +3,7 @@ import * as adminService from '../admin.service.js';
 import prisma from '../../../database/index.js';
 import { deleteByPattern } from '../../../utils/cache-keys.js';
 import { sendTakedownNotice } from '../../../integrations/email/index.js';
+import { createNotification } from '../../notifications/notifications.service.js';
 
 vi.mock('../../../utils/cache-keys.js', () => ({
   deleteByPattern: vi.fn()
@@ -10,6 +11,10 @@ vi.mock('../../../utils/cache-keys.js', () => ({
 
 vi.mock('../../../integrations/email/index.js', () => ({
   sendTakedownNotice: vi.fn().mockResolvedValue()
+}));
+
+vi.mock('../../notifications/notifications.service.js', () => ({
+  createNotification: vi.fn().mockResolvedValue()
 }));
 
 vi.mock('../../../database/index.js', () => ({
@@ -132,6 +137,57 @@ describe('Admin Service', () => {
       const result = await adminService.unpublishCourse('c1', 'violation', 'admin1');
       expect(prisma.course.update).not.toHaveBeenCalled();
       expect(result.isPublished).toBe(false);
+    });
+  });
+
+  describe('republishCourse', () => {
+    it('republishes course, increments subject count, and logs audit', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: false,
+        subjectId: 's1',
+        slug: 'test-course',
+        title: 'Test Course',
+        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+      });
+      
+      prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: true });
+      prisma.subject = { update: vi.fn() };
+      prisma.auditLog = { create: vi.fn() };
+
+      const result = await adminService.republishCourse('c1', 'fixed', 'admin1');
+      
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+        data: { isPublished: true }
+      });
+      expect(prisma.subject.update).toHaveBeenCalledWith({
+        where: { id: 's1' },
+        data: { courseCount: { increment: 1 } }
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin1',
+          actionType: 'COURSE_REPUBLISHED',
+          targetType: 'COURSE',
+          targetId: 'c1',
+          reason: 'fixed'
+        }
+      });
+      expect(result.isPublished).toBe(true);
+    });
+
+    it('returns course early if already published', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: true,
+      });
+
+      prisma.course.update = vi.fn();
+      
+      const result = await adminService.republishCourse('c1', 'fixed', 'admin1');
+      expect(prisma.course.update).not.toHaveBeenCalled();
+      expect(result.isPublished).toBe(true);
     });
   });
 });

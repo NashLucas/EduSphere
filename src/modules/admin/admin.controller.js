@@ -26,3 +26,16 @@ export const unpublishCourse = async (req, res, next) => {
     next(error);
   }
 };
+
+export const republishCourse = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+    
+    await adminService.republishCourse(id, reason, adminId);
+    response.success(res, 200, 'Course successfully republished');
+  } catch (error) {
+    next(error);
+  }
+};
