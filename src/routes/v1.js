@@ -48,6 +48,8 @@ import usersRoutes from '../modules/users/users.routes.js';
 import achievementsRoutes from '../modules/achievements/achievements.routes.js';
 import certificatesRoutes from '../modules/certificates/certificates.routes.js';
 import instructorsRoutes from '../modules/instructors/instructors.routes.js';
+import bookmarksRoutes from '../modules/bookmarks/bookmarks.routes.js';
+import reviewsRoutes from '../modules/reviews/reviews.routes.js';
 
 const apiRouter = Router();
 
@@ -63,5 +65,7 @@ apiRouter.use('/users', usersRoutes);
 apiRouter.use('/achievements', achievementsRoutes);
 apiRouter.use('/certificates', certificatesRoutes);
 apiRouter.use('/instructors', instructorsRoutes);
+apiRouter.use('/bookmarks', bookmarksRoutes);
+apiRouter.use('/reviews', reviewsRoutes);
 
 export default apiRouter;
