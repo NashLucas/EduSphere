@@ -56,20 +56,8 @@ router.get(
   adminController.getCourses
 );
 
-import { rateLimit } from 'express-rate-limit';
-import RedisStore from 'rate-limit-redis';
-import redis from '../../config/redis.js';
+import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
 import { adminCourseReasonBodySchema } from './admin.schema.js';
-
-const adminActionLimiter = rateLimit({
-  store: new RedisStore({
-    sendCommand: (...args) => redis.call(...args),
-    prefix: 'ratelimit:admin:action:',
-  }),
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many admin actions' }
-});
 
 /**
  * @openapi
@@ -101,7 +89,7 @@ const adminActionLimiter = rateLimit({
  */
 router.patch(
   '/courses/:id/unpublish',
-  adminActionLimiter,
+  adminRateLimiter,
   validate({ body: adminCourseReasonBodySchema }),
   adminController.unpublishCourse
 );
