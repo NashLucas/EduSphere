@@ -84,7 +84,7 @@ export const getInstructorDashboard = async (userId) => {
     overview: {
       publishedCourseCount: publishedCourses.length,
       totalLifetimeStudents: instructor.studentCount,
-      averageRating: instructor.rating,
+      rating: instructor.rating,
       totalReviews
     },
     enrollmentTrend,
@@ -111,7 +111,7 @@ export const getInstructorCourses = async (userId, sort = 'createdAt') => {
   const validSorts = {
     createdAt: { createdAt: 'desc' },
     studentCount: { studentCount: 'desc' },
-    rating: { averageRating: 'desc' }
+    rating: { rating: 'desc' }
   };
 
   const orderBy = validSorts[sort] || validSorts['createdAt'];
@@ -124,7 +124,7 @@ export const getInstructorCourses = async (userId, sort = 'createdAt') => {
       slug: true,
       isPublished: true,
       studentCount: true,
-      averageRating: true,
+      rating: true,
       reviewCount: true,
       createdAt: true
     },
@@ -156,7 +156,7 @@ export const getInstructorProfile = async (id) => {
       title: true,
       slug: true,
       thumbnailUrl: true,
-      averageRating: true,
+      rating: true,
       reviewCount: true,
       studentCount: true
     },

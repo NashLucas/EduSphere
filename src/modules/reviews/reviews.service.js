@@ -24,21 +24,21 @@ const recalculateRatings = async (tx, courseId) => {
   await tx.course.update({
     where: { id: courseId },
     data: {
-      averageRating: newCourseRating,
+      rating: newCourseRating,
       reviewCount: newReviewCount
     }
   });
 
   const instructorCourses = await tx.course.findMany({
     where: { instructorId: course.instructorId, isPublished: true, deletedAt: null },
-    select: { averageRating: true, studentCount: true }
+    select: { rating: true, studentCount: true }
   });
 
   let totalWeightedRating = 0;
   let totalStudents = 0;
 
   instructorCourses.forEach(c => {
-    totalWeightedRating += c.averageRating * c.studentCount;
+    totalWeightedRating += c.rating * c.studentCount;
     totalStudents += c.studentCount;
   });
 
