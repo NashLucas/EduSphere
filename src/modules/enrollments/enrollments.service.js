@@ -1,6 +1,7 @@
 import prisma from '../../database/index.js';
 import { NotFoundError, ConflictError, UnprocessableEntityError } from '../../utils/app-error.js';
 import { createNotification } from '../notifications/notifications.service.js';
+import { sendEnrollmentConfirmation } from '../../integrations/email/index.js';
 
 export const enrollInCourse = async (userId, courseId) => {
   const course = await prisma.course.findUnique({
@@ -41,9 +42,15 @@ export const enrollInCourse = async (userId, courseId) => {
     }
   }
 
+  // Fetch user for email sending
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, fullName: true }
+  });
+
   // Create new enrollment
-  return await prisma.$transaction(async (tx) => {
-    const enrollment = await tx.enrollment.create({
+  const enrollment = await prisma.$transaction(async (tx) => {
+    const enr = await tx.enrollment.create({
       data: {
         userId,
         courseId,
@@ -70,8 +77,19 @@ export const enrollInCourse = async (userId, courseId) => {
       tx
     );
 
-    return enrollment;
+    return enr;
   });
+
+  if (user) {
+    sendEnrollmentConfirmation({
+      to: user.email,
+      fullName: user.fullName,
+      courseTitle: course.title,
+      courseId: course.id,
+    }).catch(() => {});
+  }
+
+  return enrollment;
 };
 
 export const listEnrollments = async (userId, query) => {
