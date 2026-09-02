@@ -21,7 +21,7 @@ export const unpublishCourse = async (req, res, next) => {
     const adminId = req.user.id;
     
     await adminService.unpublishCourse(id, reason, adminId);
-    response.success(res, 200, 'Course successfully unpublished');
+    response.success(res, null, 'Course successfully unpublished');
   } catch (error) {
     next(error);
   }
@@ -34,7 +34,19 @@ export const republishCourse = async (req, res, next) => {
     const adminId = req.user.id;
     
     await adminService.republishCourse(id, reason, adminId);
-    response.success(res, 200, 'Course successfully republished');
+    response.success(res, null, 'Course successfully republished');
+  } catch (error) {
+    next(error);
+  }
+};
+export const softDeleteCourse = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+    
+    await adminService.softDeleteCourse(id, reason, adminId);
+    response.success(res, null, 'Course successfully soft-deleted');
   } catch (error) {
     next(error);
   }

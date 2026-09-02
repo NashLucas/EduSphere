@@ -190,4 +190,63 @@ describe('Admin Service', () => {
       expect(result.isPublished).toBe(true);
     });
   });
+
+  describe('softDeleteCourse', () => {
+    it('soft-deletes course, decrements subject count if published, logs audit', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: true,
+        deletedAt: null,
+        subjectId: 's1',
+        slug: 'test-course',
+        title: 'Test Course',
+        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+      });
+      
+      prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
+      prisma.subject = { update: vi.fn() };
+      prisma.auditLog = { create: vi.fn() };
+
+      const result = await adminService.softDeleteCourse('c1', 'violation', 'admin1');
+      
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+        data: { isPublished: false, deletedAt: expect.any(Date) }
+      });
+      expect(prisma.subject.update).toHaveBeenCalledWith({
+        where: { id: 's1' },
+        data: { courseCount: { decrement: 1 } }
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin1',
+          actionType: 'COURSE_DELETED',
+          targetType: 'COURSE',
+          targetId: 'c1',
+          reason: 'violation'
+        }
+      });
+      expect(result.deletedAt).toBeDefined();
+    });
+
+    it('soft-deletes course but does not decrement subject if already unpublished', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: false,
+        deletedAt: null,
+        subjectId: 's1',
+        slug: 'test-course',
+        title: 'Test Course',
+        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+      });
+      
+      prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
+      prisma.subject = { update: vi.fn() };
+      prisma.auditLog = { create: vi.fn() };
+
+      await adminService.softDeleteCourse('c1', 'violation', 'admin1');
+      
+      expect(prisma.subject.update).not.toHaveBeenCalled();
+    });
+  });
 });
