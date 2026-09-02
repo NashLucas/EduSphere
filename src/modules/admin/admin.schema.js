@@ -13,3 +13,7 @@ export const getAdminCoursesQuerySchema = paginationSchema.extend({
   search: z.string().optional(),
   sort: z.enum(['popular', 'rating', 'newest', 'price-low', 'price-high']).optional(),
 });
+
+export const adminCourseReasonBodySchema = z.object({
+  reason: z.string().min(5, 'Reason must be at least 5 characters'),
+});
