@@ -1,5 +1,5 @@
 import prisma from '../../database/index.js';
-import { NotFoundError } from '../../utils/app-error.js';
+import { NotFoundError, ConflictError } from '../../utils/app-error.js';
 import { deleteByPattern } from '../../utils/cache-keys.js';
 import { sendTakedownNotice } from '../../integrations/email/index.js';
 import { createNotification } from '../notifications/notifications.service.js';
@@ -357,4 +357,115 @@ export const getUsers = async (filters, pagination) => {
   ]);
 
   return { users, totalItems };
+};
+
+import { createInstructorProfile } from '../instructors/instructors.service.js';
+import redis from '../../config/redis.js';
+import { userState, TTL } from '../../utils/cache-keys.js';
+
+export const updateUserRole = async (userId, role, force, adminId) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      instructorProfile: {
+        include: {
+          courses: {
+            where: { isPublished: true, deletedAt: null }
+          }
+        }
+      }
+    }
+  });
+
+  if (!user) {
+    throw NotFoundError('User not found');
+  }
+
+  if (user.role === role) {
+    return user;
+  }
+
+  // 13.8: Demotion conflict
+  if (user.role === 'INSTRUCTOR' && role !== 'INSTRUCTOR') {
+    if (user.instructorProfile && user.instructorProfile.courses.length > 0) {
+      if (!force) {
+        // We must throw a 409 Conflict. Wait, I should import ConflictError from app-error.js!
+        // But for now I'll just throw it. I will fix the import later if it's missing.
+        throw ConflictError('User owns published courses');
+      }
+    }
+  }
+
+  const updatedUser = await prisma.$transaction(async (tx) => {
+    // Unpublish courses if forced
+    if (user.role === 'INSTRUCTOR' && role !== 'INSTRUCTOR' && force && user.instructorProfile && user.instructorProfile.courses.length > 0) {
+      for (const course of user.instructorProfile.courses) {
+        await tx.course.update({
+          where: { id: course.id },
+          data: { isPublished: false }
+        });
+        await tx.subject.update({
+          where: { id: course.subjectId },
+          data: { courseCount: { decrement: 1 } }
+        });
+        await tx.auditLog.create({
+          data: {
+            adminId,
+            actionType: 'COURSE_REJECTED',
+            targetType: 'COURSE',
+            targetId: course.id,
+            reason: 'Instructor demoted'
+          }
+        });
+      }
+    }
+
+    const updated = await tx.user.update({
+      where: { id: userId },
+      data: { role }
+    });
+
+    if (role === 'INSTRUCTOR' && !user.instructorProfile) {
+      await createInstructorProfile(userId, tx);
+    }
+
+    await tx.auditLog.create({
+      data: {
+        adminId,
+        actionType: 'ROLE_CHANGED',
+        targetType: 'USER',
+        targetId: userId,
+        reason: `Role changed from ${user.role} to ${role}`
+      }
+    });
+
+    await createNotification(
+      userId,
+      'SYSTEM',
+      'Role Updated',
+      `Your account role has been updated to ${role}.`,
+      tx
+    );
+
+    return updated;
+  });
+
+  // Write user:state:<id> to Redis
+  const statePayload = {
+    role: updatedUser.role,
+    isBanned: updatedUser.isBanned,
+    isEmailVerified: updatedUser.isEmailVerified,
+    deletedAt: updatedUser.deletedAt
+  };
+  await redis.set(userState(userId), JSON.stringify(statePayload), 'EX', TTL.userState);
+
+  // Unpublish cache invalidation if forced
+  if (user.role === 'INSTRUCTOR' && role !== 'INSTRUCTOR' && force && user.instructorProfile && user.instructorProfile.courses.length > 0) {
+    await deleteByPattern('cache:courses:*');
+    for (const course of user.instructorProfile.courses) {
+      await deleteByPattern(`cache:course:${course.slug}`);
+    }
+  }
+
+  return updatedUser;
 };
