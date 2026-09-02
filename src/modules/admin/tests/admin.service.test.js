@@ -297,4 +297,54 @@ describe('Admin Service', () => {
       expect(prisma.course.update).not.toHaveBeenCalled();
     });
   });
+
+
+  describe('getUsers', () => {
+    it('returns users and total count', async () => {
+      prisma.user = { 
+        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        count: vi.fn().mockResolvedValue(1)
+      };
+
+      const result = await adminService.getUsers({}, { page: 1, limit: 10 });
+      expect(result.users).toHaveLength(1);
+      expect(result.totalItems).toBe(1);
+      expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: {}
+      }));
+    });
+
+    it('filters by role, isBanned, and deleted', async () => {
+      prisma.user = { 
+        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        count: vi.fn().mockResolvedValue(1)
+      };
+
+      await adminService.getUsers({ role: 'INSTRUCTOR', isBanned: true, deleted: true }, { page: 1, limit: 10 });
+      expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { 
+          role: 'INSTRUCTOR',
+          isBanned: true,
+          deletedAt: { not: null }
+        }
+      }));
+    });
+
+    it('filters by search', async () => {
+      prisma.user = { 
+        findMany: vi.fn().mockResolvedValue([{ id: 'u1' }]),
+        count: vi.fn().mockResolvedValue(1)
+      };
+
+      await adminService.getUsers({ search: 'john' }, { page: 1, limit: 10 });
+      expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { 
+          OR: [
+            { fullName: { contains: 'john', mode: 'insensitive' } },
+            { email: { contains: 'john', mode: 'insensitive' } }
+          ]
+        }
+      }));
+    });
+  });
 });

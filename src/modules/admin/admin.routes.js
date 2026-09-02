@@ -57,7 +57,7 @@ router.get(
 );
 
 import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
-import { adminCourseReasonBodySchema } from './admin.schema.js';
+import { adminCourseReasonBodySchema, getAdminUsersQuerySchema } from './admin.schema.js';
 
 /**
  * @openapi
@@ -203,6 +203,59 @@ router.patch(
   adminRateLimiter,
   validate({ body: adminCourseReasonBodySchema }),
   adminController.restoreCourse
+);
+
+
+
+
+
+/**
+ * @openapi
+ * /admin/users:
+ *   get:
+ *     summary: Search and filter platform users
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: role
+ *         schema:
+ *           type: string
+ *           enum: [STUDENT, INSTRUCTOR, ADMIN]
+ *       - in: query
+ *         name: isBanned
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: deleted
+ *         schema:
+ *           type: boolean
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [newest, oldest, name]
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Paginated user list
+ */
+router.get(
+  '/users',
+  validate({ query: getAdminUsersQuerySchema }),
+  adminController.getUsers
 );
 
 export default router;

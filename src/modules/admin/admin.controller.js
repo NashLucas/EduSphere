@@ -64,3 +64,16 @@ export const restoreCourse = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getUsers = async (req, res, next) => {
+  try {
+    const { page, limit, role, isBanned, deleted, search, sort } = req.query;
+    
+    const filters = { role, isBanned, deleted, search };
+    const { users, totalItems } = await adminService.getUsers(filters, { page, limit, sort });
+    
+    response.paginated(res, users, { page, limit, totalItems });
+  } catch (error) {
+    next(error);
+  }
+};
