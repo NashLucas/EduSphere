@@ -57,7 +57,7 @@ router.get(
 );
 
 import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
-import { adminReasonBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
+import { adminReasonBodySchema, achievementBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
 
 /**
  * @openapi
@@ -376,6 +376,114 @@ router.post(
   adminRateLimiter,
   validate({ body: adminReasonBodySchema }),
   adminController.unbanUser
+);
+
+
+
+/**
+ * @openapi
+ * /admin/achievements:
+ *   post:
+ *     summary: Create a new achievement
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, description, icon, criteriaType, criteriaValue]
+ *             properties:
+ *               title:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               icon:
+ *                 type: string
+ *               criteriaType:
+ *                 type: string
+ *                 enum: [COURSES_COMPLETED, QUIZ_PERFECT_SCORE, STREAK_DAYS, LESSONS_COMPLETED]
+ *               criteriaValue:
+ *                 type: integer
+ *     responses:
+ *       201:
+ *         description: Achievement created
+ */
+router.post(
+  '/achievements',
+  adminRateLimiter,
+  validate({ body: achievementBodySchema }),
+  adminController.createAchievement
+);
+
+/**
+ * @openapi
+ * /admin/achievements/{id}:
+ *   put:
+ *     summary: Update an achievement
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, description, icon, criteriaType, criteriaValue]
+ *             properties:
+ *               title:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               icon:
+ *                 type: string
+ *               criteriaType:
+ *                 type: string
+ *                 enum: [COURSES_COMPLETED, QUIZ_PERFECT_SCORE, STREAK_DAYS, LESSONS_COMPLETED]
+ *               criteriaValue:
+ *                 type: integer
+ *     responses:
+ *       200:
+ *         description: Achievement updated
+ */
+router.put(
+  '/achievements/:id',
+  adminRateLimiter,
+  validate({ body: achievementBodySchema }),
+  adminController.updateAchievement
+);
+
+/**
+ * @openapi
+ * /admin/achievements/{id}:
+ *   delete:
+ *     summary: Delete an achievement
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Achievement deleted
+ */
+router.delete(
+  '/achievements/:id',
+  adminRateLimiter,
+  adminController.deleteAchievement
 );
 
 export default router;

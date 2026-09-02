@@ -580,4 +580,52 @@ describe('Admin Service', () => {
       expect(redis.set).not.toHaveBeenCalled();
     });
   });
+
+
+  describe('Achievements', () => {
+    beforeEach(() => {
+      prisma.achievement = {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn()
+      };
+    });
+
+    it('createAchievement creates achievement', async () => {
+      prisma.achievement.findUnique.mockResolvedValue(null);
+      prisma.achievement.create.mockResolvedValue({ id: 'a1', title: 'Test' });
+
+      const result = await adminService.createAchievement({ title: 'Test', description: 'Desc', icon: 'http://icon', criteriaType: 'COURSES_COMPLETED', criteriaValue: 1 });
+      
+      expect(prisma.achievement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ title: 'Test' })
+      });
+      expect(result.id).toBe('a1');
+    });
+
+    it('updateAchievement updates achievement', async () => {
+      prisma.achievement.findUnique.mockResolvedValueOnce({ id: 'a1', title: 'Old' }).mockResolvedValueOnce(null);
+      prisma.achievement.update.mockResolvedValue({ id: 'a1', title: 'New' });
+
+      const result = await adminService.updateAchievement('a1', { title: 'New' });
+      
+      expect(prisma.achievement.update).toHaveBeenCalledWith({
+        where: { id: 'a1' },
+        data: { title: 'New' }
+      });
+      expect(result.title).toBe('New');
+    });
+
+    it('deleteAchievement deletes achievement', async () => {
+      prisma.achievement.findUnique.mockResolvedValue({ id: 'a1' });
+      prisma.achievement.delete.mockResolvedValue({ id: 'a1' });
+
+      await adminService.deleteAchievement('a1');
+      
+      expect(prisma.achievement.delete).toHaveBeenCalledWith({
+        where: { id: 'a1' }
+      });
+    });
+  });
 });
