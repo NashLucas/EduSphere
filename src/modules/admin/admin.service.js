@@ -248,3 +248,57 @@ export const softDeleteCourse = async (courseId, reason, adminId) => {
 
   return updatedCourse;
 };
+export const restoreCourse = async (courseId, reason, adminId) => {
+  const course = await prisma.course.findUnique({
+    where: { id: courseId },
+    include: {
+      instructor: {
+        include: { user: true }
+      }
+    }
+  });
+
+  if (!course) {
+    throw NotFoundError('Course not found');
+  }
+
+  if (!course.deletedAt) {
+    return course; // Already not deleted
+  }
+
+  const updatedCourse = await prisma.$transaction(async (tx) => {
+    // 1. Mark as restored (clear deletedAt). Do NOT republish!
+    const updated = await tx.course.update({
+      where: { id: courseId },
+      data: { deletedAt: null }
+    });
+
+    // 2. Write AuditLog
+    await tx.auditLog.create({
+      data: {
+        adminId,
+        actionType: 'COURSE_RESTORED',
+        targetType: 'COURSE',
+        targetId: courseId,
+        reason
+      }
+    });
+
+    // 3. Notify
+    await createNotification(
+      course.instructor.userId,
+      'SYSTEM',
+      'Course Restored',
+      `Your course "${course.title}" has been restored by an administrator. It is currently unpublished (in draft). Reason: ${reason}`,
+      tx
+    );
+
+    return updated;
+  });
+
+  // 4. Invalidate catalog cache
+  await deleteByPattern('cache:courses:*');
+  await deleteByPattern(`cache:course:${course.slug}`);
+
+  return updatedCourse;
+};

@@ -51,3 +51,16 @@ export const softDeleteCourse = async (req, res, next) => {
     next(error);
   }
 };
+
+export const restoreCourse = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+    
+    await adminService.restoreCourse(id, reason, adminId);
+    response.success(res, null, 'Course successfully restored');
+  } catch (error) {
+    next(error);
+  }
+};

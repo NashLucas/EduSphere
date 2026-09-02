@@ -249,4 +249,52 @@ describe('Admin Service', () => {
       expect(prisma.subject.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('restoreCourse', () => {
+    it('restores course, clears deletedAt but remains unpublished, logs audit', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: false,
+        deletedAt: new Date(),
+        subjectId: 's1',
+        slug: 'test-course',
+        title: 'Test Course',
+        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+      });
+      
+      prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: null });
+      prisma.auditLog = { create: vi.fn() };
+
+      const result = await adminService.restoreCourse('c1', 'fixed', 'admin1');
+      
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'c1' },
+        data: { deletedAt: null }
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith({
+        data: {
+          adminId: 'admin1',
+          actionType: 'COURSE_RESTORED',
+          targetType: 'COURSE',
+          targetId: 'c1',
+          reason: 'fixed'
+        }
+      });
+      expect(result.deletedAt).toBeNull();
+      expect(result.isPublished).toBe(false);
+    });
+
+    it('returns course early if already restored (deletedAt is null)', async () => {
+      prisma.course.findUnique.mockResolvedValue({
+        id: 'c1',
+        isPublished: false,
+        deletedAt: null,
+      });
+
+      prisma.course.update = vi.fn();
+      
+      await adminService.restoreCourse('c1', 'fixed', 'admin1');
+      expect(prisma.course.update).not.toHaveBeenCalled();
+    });
+  });
 });

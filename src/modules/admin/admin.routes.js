@@ -166,4 +166,43 @@ router.delete(
   adminController.softDeleteCourse
 );
 
+
+
+/**
+ * @openapi
+ * /admin/courses/{id}/restore:
+ *   patch:
+ *     summary: Restore a soft-deleted course
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [reason]
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Course successfully restored
+ *       404:
+ *         description: Course not found
+ */
+router.patch(
+  '/courses/:id/restore',
+  adminRateLimiter,
+  validate({ body: adminCourseReasonBodySchema }),
+  adminController.restoreCourse
+);
+
 export default router;
