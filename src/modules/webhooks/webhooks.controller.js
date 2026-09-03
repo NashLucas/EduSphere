@@ -16,7 +16,13 @@ const verifySignature = (req) => {
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(req.body);
   const expected = hmac.digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  
+  if (sigBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
 };
 
 export const handleEmailWebhook = async (req, res, next) => {

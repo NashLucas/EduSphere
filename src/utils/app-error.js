@@ -253,6 +253,22 @@ export function normalizeError(err) {
     };
   }
 
+  // Multer errors
+  if (err?.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return {
+        statusCode: 422,
+        message: 'File size exceeds maximum allowed',
+        isOperational: true,
+      };
+    }
+    return {
+      statusCode: 400,
+      message: err.message,
+      isOperational: true,
+    };
+  }
+
   // Anything else: a TypeError, a thrown string, a dependency's error. Its message
   // was never written for a client to read.
   return {
