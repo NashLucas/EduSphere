@@ -117,3 +117,37 @@ export const unbanUser = async (req, res, next) => {
     next(error);
   }
 };
+
+export const createAchievement = async (req, res, next) => {
+  try {
+    const data = req.body;
+    
+    const result = await adminService.createAchievement(data);
+    response.created(res, result, 'Achievement created successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateAchievement = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    
+    const result = await adminService.updateAchievement(id, data);
+    response.success(res, result, 'Achievement updated successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteAchievement = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    await adminService.deleteAchievement(id);
+    response.success(res, null, 'Achievement deleted successfully');
+  } catch (error) {
+    next(error);
+  }
+};

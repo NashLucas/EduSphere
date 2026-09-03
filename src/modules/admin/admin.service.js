@@ -590,3 +590,55 @@ export const unbanUser = async (userId, reason, adminId) => {
 
   return updatedUser;
 };
+
+export const createAchievement = async (data) => {
+  const exists = await prisma.achievement.findUnique({
+    where: { title: data.title }
+  });
+
+  if (exists) {
+    throw ConflictError('Achievement with this title already exists');
+  }
+
+  return prisma.achievement.create({
+    data
+  });
+};
+
+export const updateAchievement = async (id, data) => {
+  const achievement = await prisma.achievement.findUnique({
+    where: { id }
+  });
+
+  if (!achievement) {
+    throw NotFoundError('Achievement not found');
+  }
+
+  if (data.title && data.title !== achievement.title) {
+    const exists = await prisma.achievement.findUnique({
+      where: { title: data.title }
+    });
+    if (exists) {
+      throw ConflictError('Achievement with this title already exists');
+    }
+  }
+
+  return prisma.achievement.update({
+    where: { id },
+    data
+  });
+};
+
+export const deleteAchievement = async (id) => {
+  const achievement = await prisma.achievement.findUnique({
+    where: { id }
+  });
+
+  if (!achievement) {
+    throw NotFoundError('Achievement not found');
+  }
+
+  return prisma.achievement.delete({
+    where: { id }
+  });
+};

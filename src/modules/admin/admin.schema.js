@@ -42,3 +42,11 @@ export const updateUserRoleQuerySchema = z.object({
     z.boolean().optional()
   )
 });
+
+export const achievementBodySchema = z.object({
+  title: z.string().min(2, 'Title must be at least 2 characters'),
+  description: z.string().min(5, 'Description must be at least 5 characters'),
+  icon: z.string().url('Icon must be a valid URL'),
+  criteriaType: z.enum(['COURSES_COMPLETED', 'QUIZ_PERFECT_SCORE', 'STREAK_DAYS', 'LESSONS_COMPLETED']),
+  criteriaValue: z.number().int().positive('Criteria value must be a positive integer'),
+});
