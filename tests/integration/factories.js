@@ -1,5 +1,5 @@
 import prisma from '../../src/database/index.js';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { signAccessToken } from '../../src/modules/auth/auth.service.js';
 
 export async function makeUser(overrides = {}) {
@@ -14,7 +14,7 @@ export async function makeUser(overrides = {}) {
       passwordHash,
       role: overrides.role || 'STUDENT',
       isEmailVerified: overrides.isEmailVerified !== undefined ? overrides.isEmailVerified : true,
-      ...overrides
+      ...Object.fromEntries(Object.entries(overrides).filter(([k]) => k !== 'password'))
     }
   });
 }
