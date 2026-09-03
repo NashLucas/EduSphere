@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    fileParallelism: false,
     // Both locations declared in TRD §3.4: co-located module tests under
     // src/modules/*/tests/, and the top-level tests/ tree. The scaffolded
     // pattern covered only the former, so every integration spec would have
