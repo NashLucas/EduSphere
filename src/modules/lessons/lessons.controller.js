@@ -55,7 +55,7 @@ export const completeLesson = async (req, res, next) => {
     const lessonId = req.params.id;
     const userId = req.user.id;
     const progress = await lessonsService.completeLesson(userId, lessonId);
-    return res.status(200).json(response.success(progress, 'Lesson completed successfully'));
+    return response.success(res, progress, 'Lesson completed successfully');
   } catch (err) {
     next(err);
   }
