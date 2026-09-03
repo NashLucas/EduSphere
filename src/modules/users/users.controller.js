@@ -1,5 +1,5 @@
 import * as usersService from './users.service.js';
-import * as apiResponse from '../../utils/api-response.js';
+import response from '../../utils/api-response.js';
 import { BadRequestError } from '../../utils/app-error.js';
 
 export const uploadAvatar = async (req, res, next) => {
@@ -37,5 +37,15 @@ export const updateProfile = async (req, res, next) => {
     return response.success(res, updated, 'Profile updated successfully');
   } catch (err) {
     next(err);
+  }
+};
+
+export const deleteAccount = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    await usersService.deleteAccount(userId);
+    response.success(res, null, 'Account deleted successfully');
+  } catch (error) {
+    next(error);
   }
 };

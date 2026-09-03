@@ -43,4 +43,20 @@ router.get('/me/dashboard', requireAuth, usersController.getStudentDashboard);
 router.put('/me', requireAuth, usersController.updateProfile);
 router.get('/:id', usersController.getUserProfile);
 
+
+
+/**
+ * @openapi
+ * /users/me:
+ *   delete:
+ *     summary: Self-delete and anonymize account
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Account anonymized and deleted
+ */
+router.delete('/me', requireAuth, usersController.deleteAccount);
+
 export default router;
