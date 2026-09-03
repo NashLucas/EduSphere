@@ -21,7 +21,7 @@ export const getInstructorDashboard = async (userId) => {
   const instructor = await prisma.instructor.findUnique({
     where: { userId },
     include: {
-      courses: {
+      courses: { where: { deletedAt: null },
         select: {
           id: true,
           title: true,
