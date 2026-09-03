@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import prisma from '../../database/index.js';
 import { generatePresignedUrl, headObject, moveObject } from '../../integrations/storage/index.js';
 import { verifyCourseOwnership } from '../courses/courses.service.js';
-import { BadRequestError } from '../../utils/app-error.js';
+import { BadRequestError, UnprocessableEntityError } from '../../utils/app-error.js';
 
 export const getUploadUrl = async (user, { fileName, fileType, fileSize, courseId }) => {
   await verifyCourseOwnership(courseId, user.id, user.role);
@@ -22,7 +22,7 @@ export const confirmUpload = async (user, { fileKey, title, description, categor
   try {
     meta = await headObject(fileKey);
   } catch (err) {
-    if (err.name === 'NotFound') throw BadRequestError('File not found in staging');
+    if (err.name === 'NotFound') throw UnprocessableEntityError('File not found in staging');
     throw err;
   }
 
