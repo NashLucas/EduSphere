@@ -9,6 +9,8 @@ export default defineConfig({
     // pattern covered only the former, so every integration spec would have
     // been committed, reported green, and never executed.
     include: ['src/**/*.test.js', 'tests/{unit,integration}/**/*.test.js'],
+    globalSetup: ['./tests/global-setup.js'],
+    setupFiles: ['./tests/integration/setup.js'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
