@@ -63,13 +63,12 @@ export async function makeEnrollment(userId, courseId, overrides = {}) {
   });
 }
 
-export async function makeQuiz(courseId, moduleId, overrides = {}) {
+export async function makeQuiz(courseId, lessonId, overrides = {}) {
   return await prisma.quiz.create({
     data: {
       courseId,
-      moduleId,
+      lessonId,
       title: overrides.title || 'Test Quiz',
-      timeLimitMinutes: overrides.timeLimitMinutes || 10,
       passingScore: overrides.passingScore || 80,
       maxAttempts: overrides.maxAttempts || 3,
       ...overrides
