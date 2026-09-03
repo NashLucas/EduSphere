@@ -1,4 +1,4 @@
-import { beforeAll } from 'vitest';
+import { beforeAll, afterEach } from 'vitest';
 import prisma from '../../src/database/index.js';
 import redis from '../../src/config/redis.js';
 import { execSync } from 'child_process';
@@ -31,5 +31,10 @@ beforeAll(async () => {
   execSync('npm run db:seed', { stdio: 'ignore', env: process.env });
 
   // Clear Redis
+  await redis.flushdb();
+});
+afterEach(async () => {
+  const { expect } = await import('vitest');
+  if (!expect.getState().testPath.includes('integration')) return;
   await redis.flushdb();
 });
