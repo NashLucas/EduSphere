@@ -57,7 +57,7 @@ router.get(
 );
 
 import { adminRateLimiter } from '../../middlewares/rate-limit.middleware.js';
-import { adminReasonBodySchema, achievementBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
+import { adminReasonBodySchema, getAuditLogsQuerySchema, achievementBodySchema, getAdminUsersQuerySchema, updateUserRoleBodySchema, updateUserRoleQuerySchema } from './admin.schema.js';
 
 /**
  * @openapi
@@ -503,6 +503,58 @@ router.delete(
 router.get(
   '/analytics',
   adminController.getAnalytics
+);
+
+
+
+/**
+ * @openapi
+ * /admin/audit-logs:
+ *   get:
+ *     summary: Query the governance and moderation audit trail
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: actionType
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: targetType
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: adminId
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Paginated audit records
+ */
+router.get(
+  '/audit-logs',
+  adminRateLimiter,
+  validate({ query: getAuditLogsQuerySchema }),
+  adminController.getAuditLogs
 );
 
 export default router;

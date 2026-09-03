@@ -160,3 +160,16 @@ export const getAnalytics = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getAuditLogs = async (req, res, next) => {
+  try {
+    const { page, limit, actionType, targetType, adminId, startDate, endDate } = req.query;
+    
+    const filters = { actionType, targetType, adminId, startDate, endDate };
+    const { logs, totalItems } = await adminService.getAuditLogs(filters, { page, limit });
+    
+    response.paginated(res, logs, { page, limit, totalItems });
+  } catch (error) {
+    next(error);
+  }
+};

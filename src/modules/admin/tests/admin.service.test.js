@@ -47,9 +47,7 @@ vi.mock('../../../database/index.js', () => ({
     certificate: { count: vi.fn() },
     quizAttempt: { count: vi.fn() },
     review: { aggregate: vi.fn() },
-    auditLog: {
-      create: vi.fn(),
-    },
+    auditLog: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     instructor: {
       create: vi.fn(),
     },
@@ -123,7 +121,7 @@ describe('Admin Service', () => {
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false });
       prisma.subject = { update: vi.fn() };
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
 
       const result = await adminService.unpublishCourse('c1', 'violation', 'admin1');
       
@@ -174,7 +172,7 @@ describe('Admin Service', () => {
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: true });
       prisma.subject = { update: vi.fn() };
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
 
       const result = await adminService.republishCourse('c1', 'fixed', 'admin1');
       
@@ -226,7 +224,7 @@ describe('Admin Service', () => {
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
       prisma.subject = { update: vi.fn() };
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
 
       const result = await adminService.softDeleteCourse('c1', 'violation', 'admin1');
       
@@ -263,7 +261,7 @@ describe('Admin Service', () => {
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
       prisma.subject = { update: vi.fn() };
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
 
       await adminService.softDeleteCourse('c1', 'violation', 'admin1');
       
@@ -284,7 +282,7 @@ describe('Admin Service', () => {
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: null });
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
 
       const result = await adminService.restoreCourse('c1', 'fixed', 'admin1');
       
@@ -470,7 +468,7 @@ describe('Admin Service', () => {
         fullName: 'Test User'
       });
 
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
       
       const redis = (await import('../../../config/redis.js')).default;
       redis.smembers.mockResolvedValue(['session1', 'session2']);
@@ -540,7 +538,7 @@ describe('Admin Service', () => {
         fullName: 'Test User'
       });
 
-      prisma.auditLog = { create: vi.fn() };
+      prisma.auditLog.create = vi.fn();
       
       const redis = (await import('../../../config/redis.js')).default;
       const { sendAccountStatusEmail } = await import('../../../integrations/email/index.js');
@@ -681,6 +679,37 @@ describe('Admin Service', () => {
       expect(result.enrollmentsByStatus).toEqual({ ACTIVE: 20, COMPLETED: 5, DROPPED: 0 });
       expect(result.enrollmentTrend30Days).toEqual([{ date: '2023-01-01', count: 2 }]);
       expect(result._disclaimer).toMatch(/indicative/);
+    });
+  });
+
+
+  describe('getAuditLogs', () => {
+    it('returns logs and total count with filters', async () => {
+      prisma.auditLog.findMany.mockResolvedValue([{ id: 'log1' }]);
+      prisma.auditLog.count.mockResolvedValue(1);
+
+      const result = await adminService.getAuditLogs({ 
+        actionType: 'COURSE_APPROVED',
+        targetType: 'COURSE',
+        adminId: 'a1',
+        startDate: '2023-01-01T00:00:00Z',
+        endDate: '2023-01-31T23:59:59Z'
+      }, { page: 1, limit: 10 });
+      
+      expect(result.logs).toHaveLength(1);
+      expect(result.totalItems).toBe(1);
+      expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: {
+          actionType: 'COURSE_APPROVED',
+          targetType: 'COURSE',
+          adminId: 'a1',
+          createdAt: {
+            gte: new Date('2023-01-01T00:00:00Z'),
+            lte: new Date('2023-01-31T23:59:59Z')
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      }));
     });
   });
 });
