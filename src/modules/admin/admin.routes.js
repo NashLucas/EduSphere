@@ -486,4 +486,23 @@ router.delete(
   adminController.deleteAchievement
 );
 
+
+
+/**
+ * @openapi
+ * /admin/analytics:
+ *   get:
+ *     summary: Platform-wide metrics
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Analytics payload
+ */
+router.get(
+  '/analytics',
+  adminController.getAnalytics
+);
+
 export default router;
