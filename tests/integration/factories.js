@@ -3,9 +3,9 @@ import bcrypt from 'bcrypt';
 import { signAccessToken } from '../../src/modules/auth/auth.service.js';
 
 export async function makeUser(overrides = {}) {
-  const email = overrides.email || \user-\-\@test.com\;
+  const email = overrides.email || `user-${Date.now()}-${Math.random()}@test.com`;
   const password = overrides.password || 'TestPass123!';
-  const passwordHash = await bcrypt.hash(password, 1);
+  const passwordHash = await bcrypt.hash(password, 4);
 
   return await prisma.user.create({
     data: {
@@ -39,8 +39,8 @@ export async function makeCourse(overrides = {}) {
 
   return await prisma.course.create({
     data: {
-      title: overrides.title || \Course \\,
-      slug: overrides.slug || \course-\\,
+      title: overrides.title || `Course ${Date.now()}`,
+      slug: overrides.slug || `course-${Date.now()}`,
       description: overrides.description || 'Test course description',
       subjectId,
       instructorId,
@@ -77,7 +77,7 @@ export async function makeQuiz(courseId, moduleId, overrides = {}) {
   });
 }
 
-export async function loginAs(user) {
+export function loginAs(user) {
   const accessToken = signAccessToken(user);
-  return \Bearer \\;
+  return `Bearer ${accessToken}`;
 }
