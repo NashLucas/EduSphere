@@ -1,4 +1,5 @@
 import prisma from '../../database/index.js';
+import redis from '../../config/redis.js';
 import { uploadBuffer } from '../../integrations/storage/index.js';
 import { BadRequestError } from '../../utils/app-error.js';
 
@@ -155,4 +156,36 @@ export const updateUserProfile = async (userId, updateData) => {
       createdAt: true
     }
   });
+};
+
+export const deleteAccount = async (userId) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw NotFoundError('User not found');
+
+  const anonymizedEmail = `deleted-${userId}@invalid`;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      deletedAt: new Date(),
+      email: anonymizedEmail,
+      fullName: 'Deleted User',
+      avatarUrl: null,
+      bio: null
+    }
+  });
+
+  // Revoke sessions
+  const { session, sessionIndex, userState } = await import('../../utils/cache-keys.js');
+  const indexKey = sessionIndex(userId);
+  const jtis = await redis.smembers(indexKey);
+  
+  if (jtis && jtis.length > 0) {
+    const keysToDelete = jtis.map(j => session(j));
+    await redis.unlink(...keysToDelete);
+  }
+  await redis.unlink(indexKey);
+
+  // Delete user:state
+  await redis.unlink(userState(userId));
 };
