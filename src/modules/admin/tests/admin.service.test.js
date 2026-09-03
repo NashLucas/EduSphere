@@ -34,7 +34,7 @@ vi.mock('../../../database/index.js', () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
     },
-    user: {
+    user: { groupBy: vi.fn(), 
       findMany: vi.fn(),
       count: vi.fn(),
       findUnique: vi.fn(),
@@ -43,6 +43,10 @@ vi.mock('../../../database/index.js', () => ({
     subject: {
       update: vi.fn(),
     },
+    enrollment: { groupBy: vi.fn(), findMany: vi.fn() },
+    certificate: { count: vi.fn() },
+    quizAttempt: { count: vi.fn() },
+    review: { aggregate: vi.fn() },
     auditLog: {
       create: vi.fn(),
     },
@@ -114,7 +118,7 @@ describe('Admin Service', () => {
         subjectId: 's1',
         slug: 'test-course',
         title: 'Test Course',
-        instructor: { user: { email: 'a@b.com', fullName: 'A B' } }
+        instructor: { user: { groupBy: vi.fn(),  email: 'a@b.com', fullName: 'A B' } }
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false });
@@ -165,7 +169,7 @@ describe('Admin Service', () => {
         subjectId: 's1',
         slug: 'test-course',
         title: 'Test Course',
-        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+        instructor: { user: { groupBy: vi.fn(),  email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: true });
@@ -217,7 +221,7 @@ describe('Admin Service', () => {
         subjectId: 's1',
         slug: 'test-course',
         title: 'Test Course',
-        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+        instructor: { user: { groupBy: vi.fn(),  email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
@@ -254,7 +258,7 @@ describe('Admin Service', () => {
         subjectId: 's1',
         slug: 'test-course',
         title: 'Test Course',
-        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+        instructor: { user: { groupBy: vi.fn(),  email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: new Date() });
@@ -276,7 +280,7 @@ describe('Admin Service', () => {
         subjectId: 's1',
         slug: 'test-course',
         title: 'Test Course',
-        instructor: { user: { email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
+        instructor: { user: { groupBy: vi.fn(),  email: 'a@b.com', fullName: 'A B' }, userId: 'u1' }
       });
       
       prisma.course.update = vi.fn().mockResolvedValue({ id: 'c1', isPublished: false, deletedAt: null });
@@ -626,6 +630,57 @@ describe('Admin Service', () => {
       expect(prisma.achievement.delete).toHaveBeenCalledWith({
         where: { id: 'a1' }
       });
+    });
+  });
+
+
+  describe('Analytics', () => {
+    it('getAnalytics aggregates metrics properly', async () => {
+      prisma.user.groupBy.mockResolvedValue([
+        { role: 'STUDENT', _count: { id: 10 } },
+        { role: 'INSTRUCTOR', _count: { id: 2 } }
+      ]);
+      prisma.user.count.mockResolvedValue(5);
+      
+      prisma.course.count.mockImplementation(async ({ where }) => {
+        if (where.deletedAt) return 1;
+        if (where.isPublished) return 5;
+        return 3;
+      });
+      
+      prisma.enrollment.groupBy.mockResolvedValue([
+        { status: 'ACTIVE', _count: { id: 20 } },
+        { status: 'COMPLETED', _count: { id: 5 } }
+      ]);
+      prisma.enrollment.findMany.mockImplementation(async (args) => {
+        if (args.include) {
+          return [{ course: { price: 100 } }, { course: { price: 50 } }, { course: null }];
+        }
+        return [{ enrolledAt: new Date('2023-01-01') }, { enrolledAt: new Date('2023-01-01') }];
+      });
+      
+      prisma.certificate.count.mockResolvedValue(4);
+      prisma.quizAttempt.count.mockImplementation(async (args) => args ? 8 : 10);
+      prisma.review.aggregate.mockResolvedValue({ _avg: { rating: 4.5 } });
+
+      const result = await adminService.getAnalytics();
+      
+      expect(result.metrics.totalUsers).toBe(12);
+      expect(result.metrics.totalInstructors).toBe(2);
+      expect(result.metrics.publishedCourses).toBe(5);
+      expect(result.metrics.totalEnrollments).toBe(25);
+      expect(result.metrics.completions).toBe(5);
+      expect(result.metrics.certificatesIssued).toBe(4);
+      expect(result.metrics.averageQuizPassRate).toBe(0.8);
+      expect(result.metrics.grossMerchandiseValue).toBe(150);
+      expect(result.metrics.completionRate).toBe(0.2);
+      expect(result.metrics.averageRating).toBe(4.5);
+      expect(result.metrics.newUsersThisMonth).toBe(5);
+      
+      expect(result.coursesByStatus).toEqual({ published: 5, draft: 3, deleted: 1 });
+      expect(result.enrollmentsByStatus).toEqual({ ACTIVE: 20, COMPLETED: 5, DROPPED: 0 });
+      expect(result.enrollmentTrend30Days).toEqual([{ date: '2023-01-01', count: 2 }]);
+      expect(result._disclaimer).toMatch(/indicative/);
     });
   });
 });

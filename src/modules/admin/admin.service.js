@@ -642,3 +642,95 @@ export const deleteAchievement = async (id) => {
     where: { id }
   });
 };
+
+export const getAnalytics = async () => {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const [
+    usersByRoleRaw,
+    publishedCoursesCount,
+    draftCoursesCount,
+    deletedCoursesCount,
+    enrollmentsByStatusRaw,
+    certificatesIssued,
+    totalQuizAttempts,
+    passedQuizAttempts,
+    ratingAgg,
+    newUsersThisMonth,
+    enrollmentsLast30Days,
+    allEnrollments
+  ] = await Promise.all([
+    prisma.user.groupBy({ by: ['role'], _count: { id: true } }),
+    prisma.course.count({ where: { isPublished: true, deletedAt: null } }),
+    prisma.course.count({ where: { isPublished: false, deletedAt: null } }),
+    prisma.course.count({ where: { deletedAt: { not: null } } }),
+    prisma.enrollment.groupBy({ by: ['status'], _count: { id: true } }),
+    prisma.certificate.count(),
+    prisma.quizAttempt.count(),
+    prisma.quizAttempt.count({ where: { isPassed: true } }),
+    prisma.review.aggregate({ _avg: { rating: true } }),
+    prisma.user.count({ where: { createdAt: { gte: thirtyDaysAgo } } }),
+    prisma.enrollment.findMany({
+      where: { enrolledAt: { gte: thirtyDaysAgo } },
+      select: { enrolledAt: true }
+    }),
+    prisma.enrollment.findMany({
+      include: { course: { select: { price: true } } }
+    })
+  ]);
+
+  const usersByRole = usersByRoleRaw.reduce((acc, curr) => {
+    acc[curr.role] = curr._count.id;
+    return acc;
+  }, { STUDENT: 0, INSTRUCTOR: 0, ADMIN: 0 });
+
+  const enrollmentsByStatus = enrollmentsByStatusRaw.reduce((acc, curr) => {
+    acc[curr.status] = curr._count.id;
+    return acc;
+  }, { ACTIVE: 0, COMPLETED: 0, DROPPED: 0 });
+
+  const totalUsers = Object.values(usersByRole).reduce((a, b) => a + b, 0);
+  const totalEnrollments = Object.values(enrollmentsByStatus).reduce((a, b) => a + b, 0);
+  
+  const completionRate = totalEnrollments > 0 ? (enrollmentsByStatus.COMPLETED / totalEnrollments) : 0;
+  const averageQuizPassRate = totalQuizAttempts > 0 ? (passedQuizAttempts / totalQuizAttempts) : 0;
+
+  const trendMap = {};
+  enrollmentsLast30Days.forEach(e => {
+    const dateStr = e.enrolledAt.toISOString().split('T')[0];
+    trendMap[dateStr] = (trendMap[dateStr] || 0) + 1;
+  });
+  
+  const enrollmentTrend30Days = Object.keys(trendMap).sort().map(date => ({
+    date,
+    count: trendMap[date]
+  }));
+
+  const grossMerchandiseValue = allEnrollments.reduce((sum, e) => sum + (e.course?.price || 0), 0);
+
+  return {
+    metrics: {
+      totalUsers,
+      totalInstructors: usersByRole.INSTRUCTOR,
+      publishedCourses: publishedCoursesCount,
+      totalEnrollments,
+      completions: enrollmentsByStatus.COMPLETED,
+      certificatesIssued,
+      averageQuizPassRate,
+      grossMerchandiseValue,
+      completionRate,
+      averageRating: ratingAgg._avg.rating || 0,
+      newUsersThisMonth,
+    },
+    usersByRole,
+    coursesByStatus: {
+      published: publishedCoursesCount,
+      draft: draftCoursesCount,
+      deleted: deletedCoursesCount,
+    },
+    enrollmentsByStatus,
+    enrollmentTrend30Days,
+    _disclaimer: 'grossMerchandiseValue is indicative, pre-monetization. It is not revenue.'
+  };
+};

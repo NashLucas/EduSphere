@@ -151,3 +151,12 @@ export const deleteAchievement = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getAnalytics = async (req, res, next) => {
+  try {
+    const result = await adminService.getAnalytics();
+    response.success(res, result, 'Analytics retrieved successfully');
+  } catch (error) {
+    next(error);
+  }
+};
