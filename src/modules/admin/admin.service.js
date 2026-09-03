@@ -734,3 +734,49 @@ export const getAnalytics = async () => {
     _disclaimer: 'grossMerchandiseValue is indicative, pre-monetization. It is not revenue.'
   };
 };
+
+export const getAuditLogs = async (filters, pagination) => {
+  const { page, limit } = pagination;
+  const skip = (page - 1) * limit;
+
+  const where = {};
+
+  if (filters.actionType) {
+    where.actionType = filters.actionType;
+  }
+
+  if (filters.targetType) {
+    where.targetType = filters.targetType;
+  }
+
+  if (filters.adminId) {
+    where.adminId = filters.adminId;
+  }
+
+  if (filters.startDate || filters.endDate) {
+    where.createdAt = {};
+    if (filters.startDate) {
+      where.createdAt.gte = new Date(filters.startDate);
+    }
+    if (filters.endDate) {
+      where.createdAt.lte = new Date(filters.endDate);
+    }
+  }
+
+  const [logs, totalItems] = await prisma.$transaction([
+    prisma.auditLog.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        admin: {
+          select: { fullName: true, email: true }
+        }
+      }
+    }),
+    prisma.auditLog.count({ where }),
+  ]);
+
+  return { logs, totalItems };
+};

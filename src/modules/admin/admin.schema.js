@@ -50,3 +50,14 @@ export const achievementBodySchema = z.object({
   criteriaType: z.enum(['COURSES_COMPLETED', 'QUIZ_PERFECT_SCORE', 'STREAK_DAYS', 'LESSONS_COMPLETED']),
   criteriaValue: z.number().int().positive('Criteria value must be a positive integer'),
 });
+
+export const getAuditLogsQuerySchema = paginationSchema.extend({
+  actionType: z.enum([
+    'COURSE_APPROVED', 'COURSE_REJECTED', 'COURSE_DELETED', 'COURSE_RESTORED', 'COURSE_REPUBLISHED',
+    'USER_BANNED', 'USER_UNBANNED', 'ROLE_CHANGED', 'REVIEW_DELETED', 'QUIZ_DELETED'
+  ]).optional(),
+  targetType: z.enum(['COURSE', 'USER', 'REVIEW', 'QUIZ']).optional(),
+  adminId: z.string().uuid('adminId must be a valid UUID').optional(),
+  startDate: z.string().datetime().optional(),
+  endDate: z.string().datetime().optional(),
+});
