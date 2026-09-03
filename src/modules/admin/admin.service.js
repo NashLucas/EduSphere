@@ -754,12 +754,12 @@ export const getAuditLogs = async (filters, pagination) => {
   }
 
   if (filters.startDate || filters.endDate) {
-    where.createdAt = {};
+    where.performedAt = {};
     if (filters.startDate) {
-      where.createdAt.gte = new Date(filters.startDate);
+      where.performedAt.gte = new Date(filters.startDate);
     }
     if (filters.endDate) {
-      where.createdAt.lte = new Date(filters.endDate);
+      where.performedAt.lte = new Date(filters.endDate);
     }
   }
 
@@ -768,7 +768,7 @@ export const getAuditLogs = async (filters, pagination) => {
       where,
       skip,
       take: limit,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { performedAt: 'desc' },
       include: {
         admin: {
           select: { fullName: true, email: true }
