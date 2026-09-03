@@ -5,7 +5,9 @@ import { execSync } from 'child_process';
 
 beforeAll(async () => {
   const { expect } = await import('vitest');
-  if (!expect.getState().testPath.includes('integration')) return;
+  const testPath = expect.getState().testPath;
+  const isIntegrationTest = testPath.includes('/tests/integration/') || testPath.includes('\\tests\\integration\\');
+  if (!isIntegrationTest) return;
 
   if (process.env.DATABASE_URL_TEST) {
     process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
