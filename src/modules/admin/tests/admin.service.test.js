@@ -703,12 +703,12 @@ describe('Admin Service', () => {
           actionType: 'COURSE_APPROVED',
           targetType: 'COURSE',
           adminId: 'a1',
-          createdAt: {
+          performedAt: {
             gte: new Date('2023-01-01T00:00:00Z'),
             lte: new Date('2023-01-31T23:59:59Z')
           }
         },
-        orderBy: { createdAt: 'desc' }
+        orderBy: { performedAt: 'desc' }
       }));
     });
   });
