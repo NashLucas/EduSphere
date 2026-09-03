@@ -137,7 +137,7 @@ async function reconcile() {
     }
   }
 
-  console.log(`\nReconciliation complete.`);
+  console.log('\nReconciliation complete.');
   console.log(`Divergences found: ${divergences}`);
   if (isFix) {
     console.log(`Fixes applied: ${fixes}`);
