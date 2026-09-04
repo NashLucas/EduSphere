@@ -1,7 +1,7 @@
 import prisma from '../../database/index.js';
 import redis from '../../config/redis.js';
 import { uploadBuffer } from '../../integrations/storage/index.js';
-import { BadRequestError, NotFoundError } from '../../utils/app-error.js';
+import { BadRequestError } from '../../utils/app-error.js';
 
 const checkMagicBytes = (buffer) => {
   if (buffer.length < 12) return false;
@@ -83,11 +83,11 @@ export const getStudentDashboard = async (userId) => {
   
   const activeCoursesProgress = await Promise.all(
     activeEnrollments.map(async (enrollment) => {
-      const { nextAccessibleLessonId } = await calculateNextAccessibleLessonId(enrollment.course.id, userId, enrollment.id);
+      const nextLessonId = await calculateNextAccessibleLessonId(userId, enrollment.course.id);
       let nextLesson = null;
-      if (nextAccessibleLessonId) {
+      if (nextLessonId) {
         nextLesson = await prisma.lesson.findUnique({
-          where: { id: nextAccessibleLessonId },
+          where: { id: nextLessonId },
           select: { id: true, title: true, slug: true }
         });
       }
@@ -132,7 +132,7 @@ export const getUserProfile = async (id) => {
 
   if (!user) {
     const { NotFoundError } = await import('../../utils/app-error.js');
-    throw NotFoundError('User not found');
+    throw new NotFoundError('User not found');
   }
 
   return user;
