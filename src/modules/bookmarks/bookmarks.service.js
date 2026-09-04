@@ -39,8 +39,8 @@ export const listBookmarks = async (userId, { page = 1, limit = 10 }) => {
       take: limit,
       orderBy: { createdAt: 'desc' },
       include: {
-        course: { select: { id: true, title: true, slug: true, thumbnailUrl: true } },
-        lesson: { select: { id: true, title: true, slug: true, type: true, module: { select: { course: { select: { title: true, slug: true } } } } } }
+        course: { select: { id: true, title: true, slug: true } },
+        lesson: { select: { id: true, title: true, type: true, module: { select: { course: { select: { title: true, slug: true } } } } } }
       }
     }),
     prisma.bookmark.count({ where: { userId } })

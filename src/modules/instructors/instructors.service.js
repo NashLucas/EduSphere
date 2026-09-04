@@ -35,7 +35,7 @@ export const getInstructorDashboard = async (userId) => {
 
   if (!instructor) {
     const { NotFoundError } = await import('../../utils/app-error.js');
-    throw new NotFoundError('Instructor profile not found');
+    throw NotFoundError('Instructor profile not found');
   }
 
   const publishedCourses = instructor.courses.filter(c => c.isPublished);
@@ -48,15 +48,15 @@ export const getInstructorDashboard = async (userId) => {
   const enrollments = await prisma.enrollment.findMany({
     where: {
       course: { instructorId: instructor.id },
-      createdAt: { gte: thirtyDaysAgo }
+      enrolledAt: { gte: thirtyDaysAgo }
     },
-    select: { createdAt: true },
-    orderBy: { createdAt: 'asc' }
+    select: { enrolledAt: true },
+    orderBy: { enrolledAt: 'asc' }
   });
 
   const trendMap = {};
   enrollments.forEach(e => {
-    const date = e.createdAt.toISOString().split('T')[0];
+    const date = e.enrolledAt.toISOString().split('T')[0];
     trendMap[date] = (trendMap[date] || 0) + 1;
   });
   
@@ -72,7 +72,7 @@ export const getInstructorDashboard = async (userId) => {
 
   const recentEnrollments = await prisma.enrollment.findMany({
     where: { course: { instructorId: instructor.id } },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { enrolledAt: 'desc' },
     take: 5,
     include: {
       user: { select: { fullName: true, avatarUrl: true } },
@@ -93,7 +93,7 @@ export const getInstructorDashboard = async (userId) => {
       studentName: e.user.fullName,
       studentAvatar: e.user.avatarUrl,
       courseTitle: e.course.title,
-      enrolledAt: e.createdAt
+      enrolledAt: e.enrolledAt
     }))
   };
 };
@@ -105,7 +105,7 @@ export const getInstructorCourses = async (userId, sort = 'createdAt') => {
 
   if (!instructor) {
     const { NotFoundError } = await import('../../utils/app-error.js');
-    throw new NotFoundError('Instructor profile not found');
+    throw NotFoundError('Instructor profile not found');
   }
 
   const validSorts = {
@@ -142,7 +142,7 @@ export const getInstructorProfile = async (id) => {
 
   if (!instructor) {
     const { NotFoundError } = await import('../../utils/app-error.js');
-    throw new NotFoundError('Instructor profile not found');
+    throw NotFoundError('Instructor profile not found');
   }
 
   const publishedCourseCount = await prisma.course.count({
@@ -155,7 +155,6 @@ export const getInstructorProfile = async (id) => {
       id: true,
       title: true,
       slug: true,
-      thumbnailUrl: true,
       rating: true,
       reviewCount: true,
       studentCount: true
