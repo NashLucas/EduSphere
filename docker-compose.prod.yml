@@ -1,0 +1,90 @@
+# Production Docker Compose (Task 16.2)
+# Production settings with restart policies, resource limits, and strict network isolation.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: edusphere-prod:latest
+    restart: always
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edusphere}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-edusphere_prod}?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    networks:
+      - edusphere_net
+
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edusphere}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-edusphere_prod}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edusphere} -d ${POSTGRES_DB:-edusphere_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - edusphere_net
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    # Enable appendonly for better durability in prod
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    networks:
+      - edusphere_net
+
+networks:
+  edusphere_net:
+    driver: bridge
+
+volumes:
+  postgres_data_prod:
+  redis_data_prod:
