@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: edusphere-prod:latest
+    image: ${API_IMAGE:-edusphere-prod:latest}
     restart: always
     ports:
       - '3000:3000'
