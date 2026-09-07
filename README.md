@@ -1,36 +1,17 @@
-# EduSphere Backend Service
+# EduSphere Backend
 
-> **Modern E-Learning, Curriculum Management & Automated Assessment Platform**
+**EduSphere** is an advanced E-Learning and Assessment Platform backend powered by Node.js, Express, and PostgreSQL. It delivers a robust, secure, and highly scalable foundation designed strictly around OpenAPI specifications, featuring atomic progress tracking, automated PDF certificate generation, Redis-backed session management, and RBAC governance.
 
-EduSphere is a multi-tenant backend engine built with **Node.js 22 LTS**, **Express 5**, **PostgreSQL 15**, **Prisma ORM 6**, and **Redis 7**. 
-
-It enables instructors to author and publish multi-module courses, provides learners with real-time atomic progress tracking, evaluates assessments via a secure server-side quiz engine, and automatically generates verified PDF completion certificates (`pdfkit`) and gamified achievement badges.
-
----
-
-## 📚 Core System Documentation
-
-| Document | Description | Link |
-| :--- | :--- | :--- |
-| **Technical Requirements (TRD)** | Master architecture specs, operational workflows, and acceptance criteria | [EduTRD.md](./EduTRD.md) |
-| **API Reference (OpenAPI)** | Comprehensive REST endpoint specification (52+ operations) | [apidoc.md](./apidoc.md) |
-| **System Architecture** | Component topology, request lifecycle, security matrix, and containerization | [architecture.md](./architecture.md) |
-| **Entity-Relationship Diagram** | PostgreSQL relational database schema (20 Entities, 6 Enums) | [erd.dbml](./erd.dbml) |
-| **Developer Contributing Guide** | Setup guide, git branch strategy, code standards, and PR requirements | [contributing.md](./contributing.md) |
-
----
-
-## 🌟 Key Platform Features
-
-* **Stateless JWT Authentication & Session Purging:** Dual-token security (15m Access Token + 7d `HttpOnly` Refresh Cookie) with automatic rotation. Account bans immediately purge active Redis sessions (`DEL session:<userId>:*`).
-* **Curriculum Authoring Engine:** Hierarchical content structure (Subjects → Courses → Modules → Lessons). Lessons support video streams, markdown content, code snippets, and attached quizzes.
-* **Atomic Progress Calculation:** Server tracks lesson completions and updates progress percentage atomically inside PostgreSQL transactions with zero-division protection (`totalLessons > 0`).
-* **Secure Server-Side Quiz Grading:** Quiz answer keys (`correctAnswerIndex`) are strictly stripped from student payloads. Answer submissions are evaluated in server memory with full attempt history tracking.
-* **Direct Cloud Media Uploads:** Bypasses API server memory for large video and resource uploads using 15-minute pre-signed AWS S3 / Cloudinary `PUT` URLs.
+## ✨ Features
+* **Role-Based Access Control (RBAC):** Granular permissions separating `STUDENT`, `INSTRUCTOR`, and `ADMIN` actions, strictly guarding publication lifecycles.
+* **Secure JWT Rotation & Session Management:** Access/refresh token flows with Redis-tracked `jti` blocklists allowing absolute revocation of compromised sessions.
+* **Atomic Progress Engine:** Transactions guaranteeing absolute data integrity for learning progression and real-time gamified streak updates.
+* **Direct Cloud Media Uploads:** Bypasses API server memory for large video and resource uploads using pre-signed AWS S3 or Cloudinary URLs.
 * **Automated PDF Certificate Issuance:** On-demand PDF generation (`pdfkit`) upon 100% course completion featuring unique verifiable certificate numbers (`EDU-YYYY-XXXXX`).
 * **Gamification & Learning Streaks:** Daily learning streak counters and automated achievement badge unlocking.
-* **Admin Governance & Content Moderation:** Administrative dashboard for role elevation, post-publication course unpublishing, soft-deletion, and immutable audit logs (`AuditLog`).
-* **Transactional Email Engine:** SendGrid / Brevo REST API integration (`axios`) for async, non-blocking email dispatch (email verification, password resets, enrollment alerts).
+* **Admin Governance & Content Moderation:** Administrative dashboard for role elevation, course unpublishing, soft-deletion, and immutable audit logs.
+* **Transactional Email Engine:** Provider-neutral (SendGrid / Brevo) REST API integration for async email dispatch.
+* **Automated CI/CD Pipelines:** GitHub Actions workflows for continuous integration, coverage gating, and zero-downtime production deployments.
 
 ---
 
@@ -42,18 +23,18 @@ It enables instructors to author and publish multi-module courses, provides lear
 | **API Framework** | Express 5 |
 | **Database & ORM** | PostgreSQL 15 via Prisma ORM 6 |
 | **Caching & Sessions** | Redis 7 (`ioredis` client) |
-| **Schema Validation** | Zod 3 (Runtime request body, query, and parameter validation) |
+| **Schema Validation** | Zod 3 |
 | **Authentication** | `jsonwebtoken` + `bcryptjs` (12 salt rounds) |
-| **Media & File Storage** | AWS S3 SDK / Cloudinary |
+| **Media & File Storage** | AWS S3 / Cloudinary |
 | **Document Generation** | `pdfkit` (Automated certificate generation) |
 | **Email Delivery** | SendGrid / Brevo REST API (`axios`) |
 | **Logging & Hardening** | `pino`, `pino-http`, `helmet`, `express-rate-limit` |
-| **Testing Suite** | Vitest 4 + Supertest 7 |
+| **Testing Suite** | Vitest 4 + Supertest 7 (Strict >85% Coverage Gate) |
 | **API Documentation** | OpenAPI 3.0 (`swagger-ui-express` at `/api-docs`) |
 
 ---
 
-## ⚡ Quick Start Guide
+## 🚀 Quick Start Guide
 
 ### Prerequisites
 * **Node.js:** `v22.0.0` or higher
@@ -61,11 +42,10 @@ It enables instructors to author and publish multi-module courses, provides lear
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/EduSphere/edusphere-backend.git
-cd edusphere-backend
+git clone https://github.com/NashLucas/EduSphere.git
+cd EduSphere
 npm install
 ```
-> `npm install` automatically triggers `npx prisma generate` via the `prepare` lifecycle hook.
 
 ### 2. Environment Configuration
 ```bash
@@ -75,115 +55,82 @@ cp .env.example .env
 
 ### 3. Launch Local Infrastructure
 ```bash
-docker compose up -d    # Starts PostgreSQL 15 (Port 5432) & Redis 7 (Port 6379)
-npm run migrate         # Applies database migrations
-npm run seed            # Seeds initial subjects, courses, and achievement badges
-npm run dev             # Starts API dev server with live reload at http://localhost:5000
+docker compose up -d       # Starts PostgreSQL 15 (Port 5432) & Redis 7 (Port 6379)
+npm run db:migrate         # Applies database migrations
+npm run db:seed            # Seeds initial subjects, courses, and achievement badges
+npm run dev                # Starts API dev server with live reload at http://localhost:3000
 ```
 
 ### 4. Verify System Health
 ```bash
-curl http://localhost:5000/health
-# Response: { "status": "success", "data": { "status": "healthy", "checks": { "database": "connected", "redis": "connected" } } }
+curl http://localhost:3000/health
+# Response: { "status": "ok", "database": "connected", "redis": "connected", "uptime": 14250 }
 ```
 
-* **Interactive Swagger UI:** `http://localhost:5000/api-docs`
+* **Interactive Swagger UI:** `http://localhost:3000/api-docs`
 
 ---
 
-## 🔑 Environment Variables Reference
+## ⚙️ Environment Variables Reference
 
 Validated on server boot using Zod (`src/config/env.js`). Missing or invalid configuration halts process startup.
 
 ```env
 # Server Runtime
 NODE_ENV=development
-PORT=5000
+PORT=3000
 LOG_LEVEL=info
 CORS_ORIGIN=http://localhost:3000
+FRONTEND_URL=http://localhost:3000
 SWAGGER_ENABLED=true
 
-# PostgreSQL Primary Database
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/edusphere_db?schema=public"
+# Database (PostgreSQL)
+DATABASE_URL="postgresql://edusphere:secret@localhost:5432/edusphere_db?schema=public"
 
 # Redis Cache & Sessions
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-REDIS_DATABASE=0
+REDIS_URL="redis://localhost:6379"
 
-# Authentication & JWT
-JWT_SECRET=your_super_secret_access_key_min_32_chars
-JWT_EXPIRES_IN=15m
-JWT_REFRESH_SECRET=your_super_secret_refresh_key_min_32_chars
-JWT_REFRESH_EXPIRES_IN=7d
+# Security
+JWT_SECRET="super-secret-jwt-key-replace-in-production"
+JWT_REFRESH_SECRET="super-secret-refresh-key-replace-in-production"
+JWT_ACCESS_EXPIRES_IN="15m"
+JWT_REFRESH_EXPIRES_IN="7d"
 
-# AWS S3 / Cloudinary Storage
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
-AWS_REGION=us-east-1
-AWS_S3_BUCKET=edusphere-media-storage
+# Storage Integration
+STORAGE_PROVIDER="cloudinary"
+CLOUDINARY_URL="cloudinary://api_key:api_secret@cloud_name"
 
-# Transactional Email (SendGrid / Brevo REST API)
-BREVO_API_KEY=your_brevo_api_key
-BREVO_SENDER_EMAIL=noreply@edusphere.learn
-BREVO_SENDER_NAME=EduSphere
+# Email Integration
+EMAIL_PROVIDER="brevo"
+EMAIL_API_KEY="your-email-api-key"
+EMAIL_FROM="noreply@edusphere.example.com"
+EMAIL_FROM_NAME="EduSphere"
+EMAIL_WEBHOOK_SECRET="local-dev-webhook-secret-replace-in-production"
 
-# Client Application
-FRONTEND_URL=http://localhost:3000
+# Test Environment
+DATABASE_URL_TEST="postgresql://edusphere:secret@localhost:5432/edusphere_test?schema=public"
+REDIS_URL_TEST="redis://localhost:6379/1"
 ```
 
 ---
 
-## 📋 Available CLI Scripts
+## 📜 Available CLI Scripts
 
 | Command | Description |
 | :--- | :--- |
-| `npm run dev` | Launch API server in development mode with live reload (`nodemon`) |
+| `npm run dev` | Launch API server in development mode with live reload (`--watch`) |
 | `npm start` | Launch production HTTP server runtime |
-| `npm run migrate` | Apply development database schema migrations |
-| `npm run migrate:prod` | Deploy pending Prisma migrations in production |
-| `npm run migrate:reset` | Reset database and re-run all seed scripts |
-| `npm run seed` | Seed database with subjects, default courses, and badges |
-| `npm run studio` | Launch visual Prisma Studio web inspector |
-| `npm test` | Run Vitest test runner in interactive watch mode |
-| `npm run test:run` | Execute full unit and integration test suite |
+| `npm run db:migrate` | Apply development database schema migrations |
+| `npm run db:deploy` | Deploy pending Prisma migrations in CI / production |
+| `npm run db:generate` | Generate Prisma client bindings |
+| `npm run db:seed` | Seed database with subjects, default courses, and badges |
+| `npm run db:reconcile` | Reconcile missing derived counters/metrics on existing tables |
+| `npm run test` | Run Vitest test runner |
+| `npm run test:unit` | Execute unit test suite |
+| `npm run test:integration` | Execute integration test suite sequentially (avoids DB locks) |
 | `npm run test:coverage` | Generate code coverage report (Enforced target: >85%) |
 | `npm run lint` | Execute ESLint static analysis |
-| `npm run lint:fix` | Automatically resolve lint formatting issues |
-
----
-
-## 🗺️ Project File Structure
-
-```text
-src/
-├── app.js                  # Express application setup (Helmet, CORS, rate-limiting, error handler)
-├── server.js               # Server bootstrap, DB & Redis init, graceful shutdown handlers
-├── config/                 # Environment validation, constants, system messages, Redis client
-├── database/               # Prisma schema (20 models), seed script, migration history
-├── middlewares/            # Auth guard, RBAC middleware, Zod validator, Pino logger, Multer
-├── modules/                # 16 Domain Modules (Controller → Service → Routes → Schema)
-│   ├── auth/               # Register, login, token refresh rotation, logout, password recovery
-│   ├── users/              # Profiles, avatar uploads, student dashboard metrics
-│   ├── instructors/        # Instructor profiles, teaching metrics, portfolio
-│   ├── subjects/           # Subject categories and course counts
-│   ├── courses/            # Catalog search, filtering, course publishing lifecycle
-│   ├── modules/            # Curriculum module sequencing
-│   ├── lessons/            # Lesson content player, video/code integration
-│   ├── enrollments/        # Enrollments and atomic progress engine
-│   ├── quizzes/            # Quiz authoring and secure server-side assessment engine
-│   ├── resources/          # Downloadable file attachments library & direct S3 uploads
-│   ├── bookmarks/          # Course and lesson favoriting
-│   ├── reviews/            # Star ratings and student reviews
-│   ├── achievements/       # Streaks, badges, and gamification rules
-│   ├── certificates/       # PDF certificate generation and public verification
-│   ├── notifications/      # In-app alerts and transactional email triggers
-│   └── admin/              # User management, course approvals, audit logs, analytics
-├── integrations/           # Third-party clients (AWS S3, Cloudinary, SendGrid / Brevo REST API)
-├── routes/                 # Root router mounting (/health, /api/v1, /api-docs)
-└── utils/                  # Custom error hierarchy, API response builders, PDFKit engine
-```
+| `npm run format` | Automatically resolve formatting issues with Prettier |
 
 ---
 
@@ -204,17 +151,11 @@ npm run test:coverage
 
 ## 🐳 Docker Deployment
 
-A multi-stage `Dockerfile` and `docker-compose.yml` are provided for containerized deployments:
+A multi-stage `Dockerfile` and `docker-compose.prod.yml` are provided for containerized deployments:
 
 ```bash
-# Start PostgreSQL & Redis services locally
-docker compose up -d
-
-# Build and start full containerized application stack
-docker compose up --build -d
-
-# Stop container services
-docker compose down
+# Start Production Stack (Network Isolated)
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ---
