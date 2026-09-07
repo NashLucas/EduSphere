@@ -21,6 +21,7 @@
     "test:run": "vitest run",
     "test:unit": "vitest run tests/unit src",
     "test:integration": "vitest run tests/integration --no-file-parallelism",
+    "test:smoke": "vitest run tests/e2e/smoke.test.js",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.js\""
