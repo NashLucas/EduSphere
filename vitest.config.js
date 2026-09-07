@@ -16,6 +16,14 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
       exclude: ['node_modules/', 'src/config/', 'src/database/migrations/'],
+      thresholds: {
+        'src/modules/**/*.service.js': {
+          statements: 85,
+          branches: 85,
+          functions: 85,
+          lines: 85
+        }
+      }
     },
   },
 });
