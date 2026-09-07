@@ -59,10 +59,9 @@
 // chose to log; the list exists for the fields that arrive without anyone
 // choosing.
 //
-// JWT_SECRET and JWT_REFRESH_SECRET are also named by plan:974. They are not
-// paths here because they are not request fields — they live in process.env and
-// reach a log only if something logs the environment. No path can prevent that;
-// not doing it is what prevents it.
+// JWT_SECRET and JWT_REFRESH_SECRET are also named by plan:974 (task 16.6).
+// We include them in the redaction paths so that if they are accidentally logged
+// (e.g. by logging process.env), Pino will automatically redact them.
 //
 // ── Level: quiet in tests, quiet-ish in production, verbose in development ────
 //
@@ -139,6 +138,12 @@ const REDACT_PATHS = Object.freeze([
   'res.headers["set-cookie"]',
   'passwordHash',
   '*.passwordHash',
+  'Authorization',
+  '*.Authorization',
+  'Cookie',
+  '*.Cookie',
+  'JWT_SECRET',
+  'JWT_REFRESH_SECRET'
 ]);
 
 export const logger = pino({
