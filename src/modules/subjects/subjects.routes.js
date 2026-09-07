@@ -56,6 +56,24 @@ router.get(
  *     tags: [Subjects]
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - slug
+ *             properties:
+ *               name:
+ *                 type: string
+ *               slug:
+ *                 type: string
+ *               icon:
+ *                 type: string
+ *               color:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Subject created successfully
@@ -82,6 +100,19 @@ router.post(
  *         required: true
  *         schema:
  *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               icon:
+ *                 type: string
+ *               color:
+ *                 type: string
  *     responses:
  *       200:
  *         description: Subject updated successfully
